@@ -6,6 +6,25 @@ A GitHub CLI extension for managing GitHub notifications from the terminal.
 
 `gh notifications` provides a streamlined interface to view, triage, and act on GitHub notifications without leaving the terminal.
 
+### API Quota Reporting
+
+On exit, the program prints the remaining GitHub API quota to stderr, based on the most recent
+request of each kind:
+
+- **REST** quota comes from the rate-limit headers (`X-RateLimit-Remaining`, `X-RateLimit-Limit`,
+  `X-RateLimit-Reset`) of the last REST request
+- **GraphQL** quota comes from a `rateLimit { limit remaining resetAt }` field added to the
+  batched state query, and is only reported when `--state` triggers a GraphQL call (REST and
+  GraphQL have separate quotas)
+
+```
+GitHub REST API quota: 4593/5000 remaining, resets at 16:43:22
+GitHub GraphQL API quota: 4998/5000 remaining, resets at 16:41:55
+```
+
+- Written to stderr so it never interferes with piped/redirected stdout
+- Each line is omitted if no request of that kind was made
+
 ## Features
 
 ### List Notifications

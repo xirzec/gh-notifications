@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/cli/go-gh/v2/pkg/browser"
 )
 
@@ -194,13 +193,13 @@ func (m pickerModel) View() string {
 // selectAndOpen runs the interactive picker, letting the user open notifications
 // in the browser and returning to the list after each one. The user exits with
 // "q" or Ctrl+C.
-func selectAndOpen(client *api.RESTClient, notifications []Notification) error {
+func selectAndOpen(doer requestDoer, notifications []Notification) error {
 	if len(notifications) == 0 {
 		fmt.Println("No unread notifications")
 		return nil
 	}
 
-	m := newPickerModel(client, notifications)
+	m := newPickerModel(doer, notifications)
 	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	return err
 }

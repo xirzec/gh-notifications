@@ -218,11 +218,29 @@ func isIssueOrPR(subjectType string) bool {
 	return strings.EqualFold(subjectType, "Issue") || strings.EqualFold(subjectType, "PullRequest")
 }
 
+// parseGraphQLRateLimit reads the GraphQL `rateLimit` object from a response.
+func parseGraphQLRateLimit(raw json.RawMessage) (rateLimit, bool) {
+	var v struct {
+		Limit     int    `json:"limit"`
+		Remaining int    `json:"remaining"`
+		ResetAt   string `json:"resetAt"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return rateLimit{}, false
+	}
+	rl := rateLimit{remaining: v.Remaining, limit: v.Limit}
+	if t, err := time.Parse(time.RFC3339, v.ResetAt); err == nil {
+		rl.reset = t
+	}
+	return rl, true
+}
+
 // fetchItemStates returns a map from notification index to its normalized state
 // ("open"/"closed"/"merged"), fetched in batches via a single GraphQL query per
 // batch. Notifications that are not issues/PRs, or whose subject URL cannot be
-// parsed, are absent from the map.
-func fetchItemStates(doer graphQLDoer, notifications []Notification) map[int]string {
+// parsed, are absent from the map. The second return value, when non-nil, is the
+// GraphQL API quota reported by the most recent batch.
+func fetchItemStates(doer graphQLDoer, notifications []Notification) (map[int]string, *rateLimit) {
 	type entry struct {
 		idx int
 		ref subjectRef
@@ -238,6 +256,7 @@ func fetchItemStates(doer graphQLDoer, notifications []Notification) map[int]str
 	}
 
 	states := make(map[int]string)
+	var quota *rateLimit
 	for start := 0; start < len(entries); start += stateBatchSize {
 		end := start + stateBatchSize
 		if end > len(entries) {
@@ -258,43 +277,56 @@ func fetchItemStates(doer graphQLDoer, notifications []Notification) map[int]str
 			variables[r] = e.ref.repo
 			variables[num] = e.ref.number
 		}
-		query := fmt.Sprintf("query(%s){%s}", strings.Join(params, ","), strings.Join(fields, "\n"))
+		query := fmt.Sprintf("query(%s){rateLimit{limit remaining resetAt}\n%s}", strings.Join(params, ","), strings.Join(fields, "\n"))
 
-		var resp map[string]struct {
-			IssueOrPullRequest *struct {
-				State string `json:"state"`
-			} `json:"issueOrPullRequest"`
-		}
+		var resp map[string]json.RawMessage
 		if err := doer.Do(query, variables, &resp); err != nil {
 			continue
 		}
+
+		if rlRaw, ok := resp["rateLimit"]; ok {
+			if rl, ok := parseGraphQLRateLimit(rlRaw); ok {
+				rl := rl
+				quota = &rl
+			}
+		}
+
 		for j, e := range batch {
-			node := resp[fmt.Sprintf("i%d", j)]
-			if node.IssueOrPullRequest != nil {
+			itemRaw, ok := resp[fmt.Sprintf("i%d", j)]
+			if !ok {
+				continue
+			}
+			var node struct {
+				IssueOrPullRequest *struct {
+					State string `json:"state"`
+				} `json:"issueOrPullRequest"`
+			}
+			if err := json.Unmarshal(itemRaw, &node); err == nil && node.IssueOrPullRequest != nil {
 				states[e.idx] = strings.ToLower(node.IssueOrPullRequest.State)
 			}
 		}
 	}
-	return states
+	return states, quota
 }
 
 // filterByState keeps only issues/PRs whose state matches the requested state.
 // Subjects without an issue/PR state (commits, releases, etc.) are excluded. An
 // empty state returns the input unchanged. States are fetched via batched
-// GraphQL queries to avoid a per-item REST request.
-func filterByState(doer graphQLDoer, notifications []Notification, state string) []Notification {
+// GraphQL queries to avoid a per-item REST request. The second return value,
+// when non-nil, is the GraphQL API quota observed during the lookup.
+func filterByState(doer graphQLDoer, notifications []Notification, state string) ([]Notification, *rateLimit) {
 	if state == "" {
-		return notifications
+		return notifications, nil
 	}
 
-	states := fetchItemStates(doer, notifications)
+	states, quota := fetchItemStates(doer, notifications)
 	filtered := make([]Notification, 0, len(notifications))
 	for i, n := range notifications {
 		if s, ok := states[i]; ok && matchesState(s, state) {
 			filtered = append(filtered, n)
 		}
 	}
-	return filtered
+	return filtered, quota
 }
 
 // notificationsEndpoint returns the REST endpoint for the given options.
@@ -318,11 +350,11 @@ func findNextPage(resp *http.Response) (string, bool) {
 
 // fetchNotifications retrieves all unread notifications for the authenticated
 // user, following pagination until every page has been collected.
-func fetchNotifications(client *api.RESTClient, opts options) ([]Notification, error) {
+func fetchNotifications(doer requestDoer, opts options) ([]Notification, error) {
 	var all []Notification
 	requestPath := notificationsEndpoint(opts)
 	for {
-		resp, err := client.Request(http.MethodGet, requestPath, nil)
+		resp, err := doer.Request(http.MethodGet, requestPath, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -407,7 +439,11 @@ func runNotifications(opts options) error {
 		return err
 	}
 
-	notifications, err := fetchNotifications(client, opts)
+	// Track the REST rate limit across all requests and report it on exit.
+	tracker := newRateLimitTracker(client)
+	defer tracker.report(os.Stderr)
+
+	notifications, err := fetchNotifications(tracker, opts)
 	if err != nil {
 		return err
 	}
@@ -419,21 +455,23 @@ func runNotifications(opts options) error {
 		if err != nil {
 			return err
 		}
-		notifications = filterByState(gqlClient, notifications, opts.state)
+		var gqlQuota *rateLimit
+		notifications, gqlQuota = filterByState(gqlClient, notifications, opts.state)
+		tracker.setGraphQL(gqlQuota)
 	}
 
 	if opts.markRead {
-		return runMarkRead(client, notifications, opts.dryRun, os.Stdin, os.Stdout)
+		return runMarkRead(tracker, notifications, opts.dryRun, os.Stdin, os.Stdout)
 	}
 	if opts.markDone {
-		return runMarkDone(client, notifications, opts.dryRun, os.Stdin, os.Stdout)
+		return runMarkDone(tracker, notifications, opts.dryRun, os.Stdin, os.Stdout)
 	}
 	if opts.unsubscribe {
-		return runUnsubscribe(client, notifications, opts.dryRun, os.Stdin, os.Stdout)
+		return runUnsubscribe(tracker, notifications, opts.dryRun, os.Stdin, os.Stdout)
 	}
 
 	if opts.interactive {
-		return selectAndOpen(client, notifications)
+		return selectAndOpen(tracker, notifications)
 	}
 
 	terminal := term.FromEnv()

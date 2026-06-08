@@ -306,11 +306,13 @@ func TestParseSubjectRef(t *testing.T) {
 
 // fakeGQL is a test stand-in for the GraphQL client's Do method. It reports the
 // same state for every aliased item in the batch (or a null item when state is
-// empty), and returns err when set.
+// empty), and returns err when set. When rl is set, it includes a rateLimit
+// object in the response.
 type fakeGQL struct {
 	state string // GraphQL enum, e.g. "OPEN", "CLOSED", "MERGED"
 	err   error
 	calls int
+	rl    *rateLimit
 }
 
 func (f *fakeGQL) Do(query string, variables map[string]interface{}, response interface{}) error {
@@ -324,13 +326,20 @@ func (f *fakeGQL) Do(query string, variables map[string]interface{}, response in
 			n++
 		}
 	}
-	data := map[string]map[string]interface{}{}
+	data := map[string]interface{}{}
 	for j := 0; j < n; j++ {
 		var iopr interface{}
 		if f.state != "" {
 			iopr = map[string]interface{}{"state": f.state}
 		}
 		data[fmt.Sprintf("i%d", j)] = map[string]interface{}{"issueOrPullRequest": iopr}
+	}
+	if f.rl != nil {
+		data["rateLimit"] = map[string]interface{}{
+			"limit":     f.rl.limit,
+			"remaining": f.rl.remaining,
+			"resetAt":   f.rl.reset.Format(time.RFC3339),
+		}
 	}
 	b, _ := json.Marshal(data)
 	return json.Unmarshal(b, response)
@@ -344,7 +353,7 @@ func TestFetchItemStates(t *testing.T) {
 		{Subject: NotificationSubject{Type: "Issue", URL: "not-a-url"}},
 	}
 
-	states := fetchItemStates(&fakeGQL{state: "OPEN"}, notifications)
+	states, _ := fetchItemStates(&fakeGQL{state: "OPEN"}, notifications)
 	if len(states) != 2 {
 		t.Fatalf("len(states) = %d, want 2", len(states))
 	}
@@ -359,6 +368,20 @@ func TestFetchItemStates(t *testing.T) {
 	}
 }
 
+func TestFetchItemStatesQuota(t *testing.T) {
+	notifications := []Notification{
+		{Subject: NotificationSubject{Type: "Issue", URL: "https://api.github.com/repos/o/r/issues/1"}},
+	}
+	fake := &fakeGQL{state: "OPEN", rl: &rateLimit{remaining: 4990, limit: 5000, reset: time.Unix(1700000000, 0)}}
+	_, quota := fetchItemStates(fake, notifications)
+	if quota == nil {
+		t.Fatal("expected a GraphQL quota")
+	}
+	if quota.remaining != 4990 || quota.limit != 5000 {
+		t.Errorf("quota = %+v", quota)
+	}
+}
+
 func TestFetchItemStatesBatches(t *testing.T) {
 	notifications := make([]Notification, stateBatchSize+5)
 	for i := range notifications {
@@ -368,7 +391,7 @@ func TestFetchItemStatesBatches(t *testing.T) {
 		}}
 	}
 	fake := &fakeGQL{state: "CLOSED"}
-	states := fetchItemStates(fake, notifications)
+	states, _ := fetchItemStates(fake, notifications)
 	if len(states) != len(notifications) {
 		t.Errorf("len(states) = %d, want %d", len(states), len(notifications))
 	}
@@ -385,13 +408,13 @@ func TestFilterByState(t *testing.T) {
 	}
 
 	t.Run("empty returns all", func(t *testing.T) {
-		if got := filterByState(&fakeGQL{}, notifications, ""); len(got) != 3 {
+		if got, _ := filterByState(&fakeGQL{}, notifications, ""); len(got) != 3 {
 			t.Errorf("len = %d, want 3", len(got))
 		}
 	})
 
 	t.Run("open keeps issue and pr, drops release", func(t *testing.T) {
-		got := filterByState(&fakeGQL{state: "OPEN"}, notifications, "open")
+		got, _ := filterByState(&fakeGQL{state: "OPEN"}, notifications, "open")
 		if len(got) != 2 {
 			t.Fatalf("len = %d, want 2", len(got))
 		}
@@ -403,14 +426,22 @@ func TestFilterByState(t *testing.T) {
 	})
 
 	t.Run("closed excludes open items", func(t *testing.T) {
-		if got := filterByState(&fakeGQL{state: "OPEN"}, notifications, "closed"); len(got) != 0 {
+		if got, _ := filterByState(&fakeGQL{state: "OPEN"}, notifications, "closed"); len(got) != 0 {
 			t.Errorf("len = %d, want 0", len(got))
 		}
 	})
 
 	t.Run("merged matches merged state", func(t *testing.T) {
-		if got := filterByState(&fakeGQL{state: "MERGED"}, notifications, "merged"); len(got) != 2 {
+		if got, _ := filterByState(&fakeGQL{state: "MERGED"}, notifications, "merged"); len(got) != 2 {
 			t.Errorf("len = %d, want 2", len(got))
+		}
+	})
+
+	t.Run("returns graphql quota", func(t *testing.T) {
+		fake := &fakeGQL{state: "OPEN", rl: &rateLimit{remaining: 4900, limit: 5000}}
+		_, quota := filterByState(fake, notifications, "open")
+		if quota == nil || quota.remaining != 4900 {
+			t.Errorf("quota = %+v", quota)
 		}
 	})
 }
