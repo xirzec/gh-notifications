@@ -133,6 +133,31 @@ func TestNotificationsEndpoint(t *testing.T) {
 	if got := notificationsEndpoint(options{repo: "octo/repo"}); got != "repos/octo/repo/notifications?per_page=50" {
 		t.Errorf("endpoint = %q, want %q", got, "repos/octo/repo/notifications?per_page=50")
 	}
+	if got := notificationsEndpoint(options{all: true}); got != "notifications?per_page=50&all=true" {
+		t.Errorf("endpoint = %q, want %q", got, "notifications?per_page=50&all=true")
+	}
+	if got := notificationsEndpoint(options{repo: "octo/repo", all: true}); got != "repos/octo/repo/notifications?per_page=50&all=true" {
+		t.Errorf("endpoint = %q, want %q", got, "repos/octo/repo/notifications?per_page=50&all=true")
+	}
+}
+
+func TestParseArgsAll(t *testing.T) {
+	for _, arg := range []string{"-a", "--all"} {
+		opts, err := parseArgs([]string{arg})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", arg, err)
+		}
+		if !opts.all {
+			t.Errorf("%s: expected all to be true", arg)
+		}
+	}
+	opts, err := parseArgs(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.all {
+		t.Error("expected all to default to false")
+	}
 }
 
 func TestParseArgsFilter(t *testing.T) {

@@ -47,6 +47,8 @@ type NotificationRepo struct {
 type options struct {
 	// repo, when set, limits notifications to a single OWNER/REPO.
 	repo string
+	// all, when true, includes notifications already marked as read.
+	all bool
 	// filter, when set, keeps only notifications whose title contains it
 	// (case-insensitive).
 	filter string
@@ -83,6 +85,8 @@ func parseArgs(args []string) (options, error) {
 	var opts options
 	fs.StringVar(&opts.repo, "repo", "", "Filter notifications by repository (OWNER/REPO)")
 	fs.StringVar(&opts.repo, "R", "", "Filter notifications by repository (OWNER/REPO) (shorthand)")
+	fs.BoolVar(&opts.all, "all", false, "Include notifications already marked as read")
+	fs.BoolVar(&opts.all, "a", false, "Include notifications already marked as read (shorthand)")
 	fs.StringVar(&opts.filter, "filter", "", "Keep only notifications whose title contains this text (case-insensitive)")
 	fs.StringVar(&opts.filter, "f", "", "Keep only notifications whose title contains this text (case-insensitive) (shorthand)")
 	fs.StringVar(&opts.itemType, "type", "", "Keep only notifications of this type (issue, pr, commit, release, discussion, ...)")
@@ -391,7 +395,11 @@ func notificationsEndpoint(opts options) string {
 	if opts.repo != "" {
 		base = fmt.Sprintf("repos/%s/notifications", opts.repo)
 	}
-	return fmt.Sprintf("%s?per_page=%d", base, maxPerPage)
+	endpoint := fmt.Sprintf("%s?per_page=%d", base, maxPerPage)
+	if opts.all {
+		endpoint += "&all=true"
+	}
+	return endpoint
 }
 
 // findNextPage returns the URL of the next page from the response Link header.

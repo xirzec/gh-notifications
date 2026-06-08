@@ -44,6 +44,16 @@ gh notifications
 - Automatically pages through all results (API returns at most 50 per page) so the full list is shown
 - Prints `No unread notifications` when there are none
 
+#### Including read notifications
+
+```
+gh notifications --all
+gh notifications -a
+```
+
+- By default only unread notifications are shown; `--all` includes ones already marked as read (adds `all=true` to the request)
+- Composable with `--repo` and the other filters
+
 #### Filtering by repository
 
 ```
