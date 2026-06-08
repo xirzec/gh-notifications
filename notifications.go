@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -11,6 +14,11 @@ import (
 	"github.com/cli/go-gh/v2/pkg/tableprinter"
 	"github.com/cli/go-gh/v2/pkg/term"
 )
+
+// maxPerPage is the maximum page size accepted by the notifications API.
+const maxPerPage = 50
+
+var linkRE = regexp.MustCompile(`<([^>]+)>;\s*rel="([^"]+)"`)
 
 // Notification represents a single GitHub notification thread.
 // See https://docs.github.com/en/rest/activity/notifications
@@ -59,19 +67,52 @@ func parseArgs(args []string) (options, error) {
 
 // notificationsEndpoint returns the REST endpoint for the given options.
 func notificationsEndpoint(opts options) string {
+	base := "notifications"
 	if opts.repo != "" {
-		return fmt.Sprintf("repos/%s/notifications", opts.repo)
+		base = fmt.Sprintf("repos/%s/notifications", opts.repo)
 	}
-	return "notifications"
+	return fmt.Sprintf("%s?per_page=%d", base, maxPerPage)
 }
 
-// fetchNotifications retrieves unread notifications for the authenticated user.
-func fetchNotifications(client *api.RESTClient, opts options) ([]Notification, error) {
-	var notifications []Notification
-	if err := client.Get(notificationsEndpoint(opts), &notifications); err != nil {
-		return nil, err
+// findNextPage returns the URL of the next page from the response Link header.
+func findNextPage(resp *http.Response) (string, bool) {
+	for _, m := range linkRE.FindAllStringSubmatch(resp.Header.Get("Link"), -1) {
+		if len(m) > 2 && m[2] == "next" {
+			return m[1], true
+		}
 	}
-	return notifications, nil
+	return "", false
+}
+
+// fetchNotifications retrieves all unread notifications for the authenticated
+// user, following pagination until every page has been collected.
+func fetchNotifications(client *api.RESTClient, opts options) ([]Notification, error) {
+	var all []Notification
+	requestPath := notificationsEndpoint(opts)
+	for {
+		resp, err := client.Request(http.MethodGet, requestPath, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		var page []Notification
+		decodeErr := json.NewDecoder(resp.Body).Decode(&page)
+		closeErr := resp.Body.Close()
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		all = append(all, page...)
+
+		next, hasNext := findNextPage(resp)
+		if !hasNext {
+			break
+		}
+		requestPath = next
+	}
+	return all, nil
 }
 
 // renderNotifications writes the notifications to out as a table.

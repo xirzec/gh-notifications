@@ -20,6 +20,7 @@ gh notifications
 - Displays a table with columns: `REPOSITORY`, `REASON`, `TITLE`, `AGE`
 - `AGE` is a short relative time (`now`, `5m`, `3h`, `2d`) based on the thread's last update
 - Ordered by most recently updated first (API default)
+- Automatically pages through all results (API returns at most 50 per page) so the full list is shown
 - Prints `No unread notifications` when there are none
 
 #### Filtering by repository

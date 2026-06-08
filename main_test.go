@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -94,10 +95,37 @@ func TestParseArgs(t *testing.T) {
 }
 
 func TestNotificationsEndpoint(t *testing.T) {
-	if got := notificationsEndpoint(options{}); got != "notifications" {
-		t.Errorf("endpoint = %q, want %q", got, "notifications")
+	if got := notificationsEndpoint(options{}); got != "notifications?per_page=50" {
+		t.Errorf("endpoint = %q, want %q", got, "notifications?per_page=50")
 	}
-	if got := notificationsEndpoint(options{repo: "octo/repo"}); got != "repos/octo/repo/notifications" {
-		t.Errorf("endpoint = %q, want %q", got, "repos/octo/repo/notifications")
+	if got := notificationsEndpoint(options{repo: "octo/repo"}); got != "repos/octo/repo/notifications?per_page=50" {
+		t.Errorf("endpoint = %q, want %q", got, "repos/octo/repo/notifications?per_page=50")
 	}
+}
+
+func TestFindNextPage(t *testing.T) {
+	t.Run("with next link", func(t *testing.T) {
+		resp := &http.Response{Header: http.Header{}}
+		resp.Header.Set("Link", `<https://api.github.com/notifications?page=2>; rel="next", <https://api.github.com/notifications?page=5>; rel="last"`)
+		got, ok := findNextPage(resp)
+		if !ok {
+			t.Fatal("expected a next page")
+		}
+		if got != "https://api.github.com/notifications?page=2" {
+			t.Errorf("next = %q", got)
+		}
+	})
+	t.Run("without next link", func(t *testing.T) {
+		resp := &http.Response{Header: http.Header{}}
+		resp.Header.Set("Link", `<https://api.github.com/notifications?page=1>; rel="prev"`)
+		if _, ok := findNextPage(resp); ok {
+			t.Error("expected no next page")
+		}
+	})
+	t.Run("no link header", func(t *testing.T) {
+		resp := &http.Response{Header: http.Header{}}
+		if _, ok := findNextPage(resp); ok {
+			t.Error("expected no next page")
+		}
+	})
 }
