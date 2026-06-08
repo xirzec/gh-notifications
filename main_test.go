@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -126,6 +128,98 @@ func TestFindNextPage(t *testing.T) {
 		resp := &http.Response{Header: http.Header{}}
 		if _, ok := findNextPage(resp); ok {
 			t.Error("expected no next page")
+		}
+	})
+}
+
+func TestParseArgsInteractive(t *testing.T) {
+	for _, arg := range []string{"-i", "--interactive"} {
+		opts, err := parseArgs([]string{arg})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", arg, err)
+		}
+		if !opts.interactive {
+			t.Errorf("%s: expected interactive to be true", arg)
+		}
+	}
+	opts, err := parseArgs(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.interactive {
+		t.Error("expected interactive to default to false")
+	}
+}
+
+func TestNotificationItem(t *testing.T) {
+	n := Notification{
+		Reason:     "mention",
+		UpdatedAt:  time.Now().Add(-3 * time.Hour),
+		Subject:    NotificationSubject{Title: "Fix the bug"},
+		Repository: NotificationRepo{FullName: "octo/repo"},
+	}
+	item := notificationItem{n: n}
+
+	if item.Title() != "Fix the bug" {
+		t.Errorf("Title = %q", item.Title())
+	}
+	if desc := item.Description(); !strings.Contains(desc, "octo/repo") || !strings.Contains(desc, "mention") || !strings.Contains(desc, "3h") {
+		t.Errorf("Description = %q", desc)
+	}
+	for _, want := range []string{"octo/repo", "mention", "Fix the bug"} {
+		if !strings.Contains(item.FilterValue(), want) {
+			t.Errorf("FilterValue %q missing %q", item.FilterValue(), want)
+		}
+	}
+}
+
+// fakeDoer is a test stand-in for the REST client's Request method.
+type fakeDoer struct {
+	body string
+	err  error
+}
+
+func (f fakeDoer) Request(method, path string, body io.Reader) (*http.Response, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &http.Response{
+		Body:   io.NopCloser(strings.NewReader(f.body)),
+		Header: http.Header{},
+	}, nil
+}
+
+func TestResolveWebURL(t *testing.T) {
+	n := Notification{
+		Subject:    NotificationSubject{URL: "https://api.github.com/repos/octo/repo/issues/1"},
+		Repository: NotificationRepo{FullName: "octo/repo"},
+	}
+
+	t.Run("uses subject html_url", func(t *testing.T) {
+		doer := fakeDoer{body: `{"html_url":"https://github.com/octo/repo/issues/1"}`}
+		if got := resolveWebURL(doer, n); got != "https://github.com/octo/repo/issues/1" {
+			t.Errorf("url = %q", got)
+		}
+	})
+
+	t.Run("falls back to repo on request error", func(t *testing.T) {
+		doer := fakeDoer{err: errors.New("boom")}
+		if got := resolveWebURL(doer, n); got != "https://github.com/octo/repo" {
+			t.Errorf("url = %q", got)
+		}
+	})
+
+	t.Run("falls back to repo when no subject url", func(t *testing.T) {
+		bare := Notification{Repository: NotificationRepo{FullName: "octo/repo"}}
+		if got := resolveWebURL(fakeDoer{}, bare); got != "https://github.com/octo/repo" {
+			t.Errorf("url = %q", got)
+		}
+	})
+
+	t.Run("falls back when html_url empty", func(t *testing.T) {
+		doer := fakeDoer{body: `{"html_url":""}`}
+		if got := resolveWebURL(doer, n); got != "https://github.com/octo/repo" {
+			t.Errorf("url = %q", got)
 		}
 	})
 }

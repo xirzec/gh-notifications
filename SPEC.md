@@ -34,4 +34,23 @@ gh notifications -R OWNER/REPO
 - Repository must be in `OWNER/REPO` format; otherwise the command exits with an error
 - Output and columns are identical to the unfiltered listing
 
+### Open a Notification in the Browser
+
+Interactively pick a notification and open it in the default web browser.
+
+```
+gh notifications --interactive
+gh notifications -i
+```
+
+- Presents a full-screen, scrollable list (Bubble Tea) of the fetched notifications
+- Each entry shows the title with `OWNER/REPO  [reason]  <age> ago` beneath it
+- Navigation: arrow keys or `j`/`k` to move, `/` to filter, `enter` to open the highlighted entry
+- After opening a notification, returns to the list so several can be opened in one session
+- Exit with `q` or `Ctrl+C`
+- Opens the selected thread's web page, resolved from the subject's `html_url`
+- Falls back to the repository page when the subject has no web URL (e.g. discussions or security alerts)
+- Combines with `--repo` to pick from a single repository's notifications
+- Uses the browser configured via `GH_BROWSER`, the `gh` config, or `BROWSER`
+
 <!-- Add new features below as they are specified -->

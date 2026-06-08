@@ -45,6 +45,9 @@ type NotificationRepo struct {
 type options struct {
 	// repo, when set, limits notifications to a single OWNER/REPO.
 	repo string
+	// interactive, when true, prompts the user to pick a notification to
+	// open in a web browser instead of printing the table.
+	interactive bool
 }
 
 // parseArgs parses command-line arguments into options.
@@ -53,6 +56,8 @@ func parseArgs(args []string) (options, error) {
 	var opts options
 	fs.StringVar(&opts.repo, "repo", "", "Filter notifications by repository (OWNER/REPO)")
 	fs.StringVar(&opts.repo, "R", "", "Filter notifications by repository (OWNER/REPO) (shorthand)")
+	fs.BoolVar(&opts.interactive, "interactive", false, "Interactively select a notification to open in the browser")
+	fs.BoolVar(&opts.interactive, "i", false, "Interactively select a notification to open in the browser (shorthand)")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -161,7 +166,36 @@ func runNotifications(opts options) error {
 		return err
 	}
 
+	if opts.interactive {
+		return selectAndOpen(client, notifications)
+	}
+
 	terminal := term.FromEnv()
 	width, _, _ := terminal.Size()
 	return renderNotifications(terminal.Out(), notifications, terminal.IsTerminalOutput(), width)
+}
+
+// requestDoer is the subset of api.RESTClient used to resolve web URLs.
+// It allows the resolution logic to be unit tested with a fake.
+type requestDoer interface {
+	Request(method, path string, body io.Reader) (*http.Response, error)
+}
+
+// resolveWebURL determines the browser URL for a notification. It fetches the
+// subject's API resource to read its html_url, falling back to the repository
+// page when the subject has no resolvable web URL (e.g. discussions or alerts).
+func resolveWebURL(doer requestDoer, n Notification) string {
+	if n.Subject.URL != "" {
+		if resp, err := doer.Request(http.MethodGet, n.Subject.URL, nil); err == nil {
+			var subject struct {
+				HTMLURL string `json:"html_url"`
+			}
+			decodeErr := json.NewDecoder(resp.Body).Decode(&subject)
+			resp.Body.Close()
+			if decodeErr == nil && subject.HTMLURL != "" {
+				return subject.HTMLURL
+			}
+		}
+	}
+	return "https://github.com/" + n.Repository.FullName
 }
