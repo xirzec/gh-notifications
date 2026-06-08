@@ -44,10 +44,32 @@ func openCmd(doer requestDoer, n Notification) tea.Cmd {
 	}
 }
 
+// markedMsg is emitted after attempting to mark a notification (read or done).
+type markedMsg struct {
+	id     string
+	title  string
+	action string
+	err    error
+}
+
+// markCmd applies the given mark action ("read" or "done") to a notification
+// asynchronously.
+func markCmd(doer requestDoer, n Notification, action string) tea.Cmd {
+	return func() tea.Msg {
+		err := markThread(doer, n.ID, action)
+		return markedMsg{id: n.ID, title: n.Subject.Title, action: action, err: err}
+	}
+}
+
 // pickerModel is the Bubble Tea model backing the interactive notification list.
 type pickerModel struct {
-	list list.Model
-	doer requestDoer
+	list          list.Model
+	doer          requestDoer
+	width         int
+	height        int
+	confirming    bool
+	confirmTarget Notification
+	confirmAction string
 }
 
 func newPickerModel(doer requestDoer, notifications []Notification) pickerModel {
@@ -57,7 +79,7 @@ func newPickerModel(doer requestDoer, notifications []Notification) pickerModel 
 	}
 
 	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
-	l.Title = "Notifications"
+	l.Title = "Notifications  (enter: open · r: read · d: done · q: quit)"
 	l.SetStatusBarItemName("notification", "notifications")
 
 	return pickerModel{list: l, doer: doer}
@@ -65,10 +87,23 @@ func newPickerModel(doer requestDoer, notifications []Notification) pickerModel 
 
 func (m pickerModel) Init() tea.Cmd { return nil }
 
+// reservedRows is the number of rows kept below the list for the confirm prompt.
+const reservedRows = 2
+
+// resizeList sizes the list, reserving space for the confirm prompt when active.
+func (m *pickerModel) resizeList() {
+	height := m.height
+	if m.confirming {
+		height -= reservedRows
+	}
+	m.list.SetSize(m.width, height)
+}
+
 func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.list.SetSize(msg.Width, msg.Height)
+		m.width, m.height = msg.Width, msg.Height
+		m.resizeList()
 		return m, nil
 
 	case openedMsg:
@@ -77,11 +112,41 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.list.NewStatusMessage("Opened " + msg.url)
 
+	case markedMsg:
+		if msg.err != nil {
+			return m, m.list.NewStatusMessage("Error marking " + msg.action + ": " + msg.err.Error())
+		}
+		for i, it := range m.list.Items() {
+			if ni, ok := it.(notificationItem); ok && ni.n.ID == msg.id {
+				m.list.RemoveItem(i)
+				break
+			}
+		}
+		return m, m.list.NewStatusMessage("Marked as " + msg.action + ": " + msg.title)
+
 	case tea.KeyMsg:
-		// Ctrl+C always quits, even while filtering.
+		// Ctrl+C always quits, even while filtering or confirming.
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
+
+		// While a confirmation is pending, capture y/n and nothing else.
+		if m.confirming {
+			action := m.confirmAction
+			target := m.confirmTarget
+			m.confirming = false
+			m.resizeList()
+			switch msg.String() {
+			case "y", "Y":
+				return m, tea.Batch(
+					m.list.NewStatusMessage("Marking as "+action+"…"),
+					markCmd(m.doer, target, action),
+				)
+			default:
+				return m, m.list.NewStatusMessage("Cancelled")
+			}
+		}
+
 		// While filtering, let the list consume all other keys.
 		if m.list.FilterState() != list.Filtering {
 			switch msg.String() {
@@ -94,6 +159,18 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						openCmd(m.doer, it.n),
 					)
 				}
+			case "r", "d":
+				if it, ok := m.list.SelectedItem().(notificationItem); ok {
+					m.confirming = true
+					m.confirmTarget = it.n
+					if msg.String() == "d" {
+						m.confirmAction = "done"
+					} else {
+						m.confirmAction = "read"
+					}
+					m.resizeList()
+					return m, nil
+				}
 			}
 		}
 	}
@@ -104,7 +181,11 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m pickerModel) View() string {
-	return m.list.View()
+	v := m.list.View()
+	if m.confirming {
+		v += fmt.Sprintf("\n\nMark \"%s\" as %s? (y/N) ", m.confirmTarget.Subject.Title, m.confirmAction)
+	}
+	return v
 }
 
 // selectAndOpen runs the interactive picker, letting the user open notifications

@@ -12,4 +12,4 @@ lint:
 	go vet ./...
 
 clean:
-	rm -f $(BINARY) $(BINARY).exe
+	rm -f $(BINARY) $(BINARY).exe $(BINARY).exe~

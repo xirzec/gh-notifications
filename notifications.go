@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -60,6 +61,14 @@ type options struct {
 	interactive bool
 	// showReason, when true, includes the REASON column in the table output.
 	showReason bool
+	// markRead, when true, marks the (filtered) notifications as read.
+	markRead bool
+	// markDone, when true, marks the (filtered) notifications as done,
+	// removing them from the inbox.
+	markDone bool
+	// dryRun, when true, reports what a mutating command would do without
+	// calling the API.
+	dryRun bool
 }
 
 // parseArgs parses command-line arguments into options.
@@ -76,6 +85,9 @@ func parseArgs(args []string) (options, error) {
 	fs.BoolVar(&opts.interactive, "interactive", false, "Interactively select a notification to open in the browser")
 	fs.BoolVar(&opts.interactive, "i", false, "Interactively select a notification to open in the browser (shorthand)")
 	fs.BoolVar(&opts.showReason, "show-reason", false, "Include the REASON column in the output")
+	fs.BoolVar(&opts.markRead, "mark-read", false, "Mark the matching notifications as read (asks for confirmation)")
+	fs.BoolVar(&opts.markDone, "mark-done", false, "Mark the matching notifications as done, removing them from the inbox (asks for confirmation)")
+	fs.BoolVar(&opts.dryRun, "dry-run", false, "Show what a mutating command would do without calling the API")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -91,6 +103,9 @@ func parseArgs(args []string) (options, error) {
 		default:
 			return options{}, fmt.Errorf("invalid state %q: expected open, closed, or merged", opts.state)
 		}
+	}
+	if opts.markRead && opts.markDone {
+		return options{}, fmt.Errorf("--mark-read and --mark-done cannot be used together")
 	}
 	return opts, nil
 }
@@ -395,6 +410,13 @@ func runNotifications(opts options) error {
 			return err
 		}
 		notifications = filterByState(gqlClient, notifications, opts.state)
+	}
+
+	if opts.markRead {
+		return runMarkRead(client, notifications, opts.dryRun, os.Stdin, os.Stdout)
+	}
+	if opts.markDone {
+		return runMarkDone(client, notifications, opts.dryRun, os.Stdin, os.Stdout)
 	}
 
 	if opts.interactive {
