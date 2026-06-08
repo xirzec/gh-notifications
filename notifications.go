@@ -106,10 +106,8 @@ func parseArgs(args []string) (options, error) {
 		}
 	}
 	if opts.state != "" {
-		switch strings.ToLower(opts.state) {
-		case "open", "closed", "merged":
-		default:
-			return options{}, fmt.Errorf("invalid state %q: expected open, closed, or merged", opts.state)
+		if !validStates[normalizeState(opts.state)] {
+			return options{}, fmt.Errorf("invalid state %q: expected open, closed, merged, not-planned, or completed", opts.state)
 		}
 	}
 	mutations := 0
@@ -206,11 +204,42 @@ func parseSubjectRef(apiURL string) (subjectRef, bool) {
 	return subjectRef{owner: m[1], repo: m[2], number: number}, true
 }
 
-// matchesState reports whether a normalized item state ("open", "closed", or
-// "merged") satisfies the requested filter. With GraphQL, a merged pull request
-// reports state "merged" rather than "closed", so the comparison is exact.
-func matchesState(state, want string) bool {
-	return strings.EqualFold(state, want)
+// normalizeState canonicalizes a user-supplied state name: lower-cased with
+// hyphens treated as underscores (so "not-planned" == "not_planned").
+func normalizeState(s string) string {
+	return strings.ToLower(strings.ReplaceAll(s, "-", "_"))
+}
+
+// validStates lists the accepted --state values (after normalization).
+var validStates = map[string]bool{
+	"open":        true,
+	"closed":      true,
+	"merged":      true,
+	"not_planned": true,
+	"unplanned":   true,
+	"notplanned":  true,
+	"completed":   true,
+}
+
+// matchesState reports whether an item's detail satisfies the requested state
+// filter. "closed" matches any closed item; "not-planned"/"completed" further
+// require the corresponding issue close reason. A merged pull request reports
+// state "merged" rather than "closed".
+func matchesState(d itemDetail, want string) bool {
+	switch normalizeState(want) {
+	case "open":
+		return d.state == "open"
+	case "closed":
+		return d.state == "closed"
+	case "merged":
+		return d.state == "merged"
+	case "not_planned", "unplanned", "notplanned":
+		return d.state == "closed" && d.stateReason == "not_planned"
+	case "completed":
+		return d.state == "closed" && d.stateReason == "completed"
+	default:
+		return false
+	}
 }
 
 // stateBatchSize bounds how many items are requested per GraphQL call to keep
@@ -241,8 +270,9 @@ func parseGraphQLRateLimit(raw json.RawMessage) (rateLimit, bool) {
 
 // itemDetail holds the GraphQL-fetched attributes of an issue or pull request.
 type itemDetail struct {
-	state   string // normalized: "open", "closed", or "merged"
-	isDraft bool   // true only for draft pull requests
+	state       string // normalized: "open", "closed", or "merged"
+	stateReason string // normalized issue close reason: "completed", "not_planned", "reopened", or ""
+	isDraft     bool   // true only for draft pull requests
 }
 
 // fetchItemDetails returns a map from notification index to its issue/PR detail,
@@ -281,7 +311,7 @@ func fetchItemDetails(doer graphQLDoer, notifications []Notification) (map[int]i
 			o, r, num := fmt.Sprintf("o%d", j), fmt.Sprintf("r%d", j), fmt.Sprintf("n%d", j)
 			params = append(params, fmt.Sprintf("$%s:String!,$%s:String!,$%s:Int!", o, r, num))
 			fields = append(fields, fmt.Sprintf(
-				"i%d: repository(owner:$%s,name:$%s){issueOrPullRequest(number:$%s){__typename ... on Issue{state} ... on PullRequest{state isDraft}}}",
+				"i%d: repository(owner:$%s,name:$%s){issueOrPullRequest(number:$%s){__typename ... on Issue{state stateReason} ... on PullRequest{state isDraft}}}",
 				j, o, r, num))
 			variables[o] = e.ref.owner
 			variables[r] = e.ref.repo
@@ -308,14 +338,16 @@ func fetchItemDetails(doer graphQLDoer, notifications []Notification) (map[int]i
 			}
 			var node struct {
 				IssueOrPullRequest *struct {
-					State   string `json:"state"`
-					IsDraft bool   `json:"isDraft"`
+					State       string `json:"state"`
+					StateReason string `json:"stateReason"`
+					IsDraft     bool   `json:"isDraft"`
 				} `json:"issueOrPullRequest"`
 			}
 			if err := json.Unmarshal(itemRaw, &node); err == nil && node.IssueOrPullRequest != nil {
 				details[e.idx] = itemDetail{
-					state:   strings.ToLower(node.IssueOrPullRequest.State),
-					isDraft: node.IssueOrPullRequest.IsDraft,
+					state:       strings.ToLower(node.IssueOrPullRequest.State),
+					stateReason: strings.ToLower(node.IssueOrPullRequest.StateReason),
+					isDraft:     node.IssueOrPullRequest.IsDraft,
 				}
 			}
 		}
@@ -331,7 +363,7 @@ func filterByState(notifications []Notification, details map[int]itemDetail, sta
 	}
 	filtered := make([]Notification, 0, len(notifications))
 	for i, n := range notifications {
-		if d, ok := details[i]; ok && matchesState(d.state, state) {
+		if d, ok := details[i]; ok && matchesState(d, state) {
 			filtered = append(filtered, n)
 		}
 	}

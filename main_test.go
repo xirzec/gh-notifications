@@ -251,7 +251,7 @@ func TestFilterByType(t *testing.T) {
 }
 
 func TestParseArgsState(t *testing.T) {
-	for _, s := range []string{"open", "closed", "merged", "OPEN"} {
+	for _, s := range []string{"open", "closed", "merged", "OPEN", "not-planned", "not_planned", "unplanned", "completed"} {
 		if _, err := parseArgs([]string{"--state", s}); err != nil {
 			t.Errorf("state %q: unexpected error: %v", s, err)
 		}
@@ -263,20 +263,28 @@ func TestParseArgsState(t *testing.T) {
 
 func TestMatchesState(t *testing.T) {
 	cases := []struct {
-		state string
-		want  string
-		match bool
+		detail itemDetail
+		want   string
+		match  bool
 	}{
-		{"open", "open", true},
-		{"closed", "open", false},
-		{"closed", "closed", true},
-		{"merged", "closed", false},
-		{"merged", "merged", true},
-		{"open", "merged", false},
+		{itemDetail{state: "open"}, "open", true},
+		{itemDetail{state: "closed"}, "open", false},
+		{itemDetail{state: "closed"}, "closed", true},
+		{itemDetail{state: "merged"}, "closed", false},
+		{itemDetail{state: "merged"}, "merged", true},
+		{itemDetail{state: "open"}, "merged", false},
+		{itemDetail{state: "closed", stateReason: "not_planned"}, "not-planned", true},
+		{itemDetail{state: "closed", stateReason: "not_planned"}, "not_planned", true},
+		{itemDetail{state: "closed", stateReason: "not_planned"}, "unplanned", true},
+		{itemDetail{state: "closed", stateReason: "completed"}, "not-planned", false},
+		{itemDetail{state: "open", stateReason: ""}, "not-planned", false},
+		{itemDetail{state: "closed", stateReason: "not_planned"}, "closed", true},
+		{itemDetail{state: "closed", stateReason: "completed"}, "completed", true},
+		{itemDetail{state: "closed", stateReason: "not_planned"}, "completed", false},
 	}
 	for _, c := range cases {
-		if got := matchesState(c.state, c.want); got != c.match {
-			t.Errorf("matchesState(%q, %q) = %v, want %v", c.state, c.want, got, c.match)
+		if got := matchesState(c.detail, c.want); got != c.match {
+			t.Errorf("matchesState(%+v, %q) = %v, want %v", c.detail, c.want, got, c.match)
 		}
 	}
 }
@@ -309,11 +317,12 @@ func TestParseSubjectRef(t *testing.T) {
 // item when state is empty), and returns err when set. When rl is set, it
 // includes a rateLimit object in the response.
 type fakeGQL struct {
-	state string // GraphQL enum, e.g. "OPEN", "CLOSED", "MERGED"
-	draft bool
-	err   error
-	calls int
-	rl    *rateLimit
+	state       string // GraphQL enum, e.g. "OPEN", "CLOSED", "MERGED"
+	stateReason string // GraphQL enum, e.g. "NOT_PLANNED", "COMPLETED"
+	draft       bool
+	err         error
+	calls       int
+	rl          *rateLimit
 }
 
 func (f *fakeGQL) Do(query string, variables map[string]interface{}, response interface{}) error {
@@ -331,7 +340,7 @@ func (f *fakeGQL) Do(query string, variables map[string]interface{}, response in
 	for j := 0; j < n; j++ {
 		var iopr interface{}
 		if f.state != "" {
-			iopr = map[string]interface{}{"state": f.state, "isDraft": f.draft}
+			iopr = map[string]interface{}{"state": f.state, "stateReason": f.stateReason, "isDraft": f.draft}
 		}
 		data[fmt.Sprintf("i%d", j)] = map[string]interface{}{"issueOrPullRequest": iopr}
 	}
@@ -354,12 +363,15 @@ func TestFetchItemDetails(t *testing.T) {
 		{Subject: NotificationSubject{Type: "Issue", URL: "not-a-url"}},
 	}
 
-	details, _ := fetchItemDetails(&fakeGQL{state: "OPEN", draft: true}, notifications)
+	details, _ := fetchItemDetails(&fakeGQL{state: "CLOSED", stateReason: "NOT_PLANNED", draft: true}, notifications)
 	if len(details) != 2 {
 		t.Fatalf("len(details) = %d, want 2", len(details))
 	}
-	if details[0].state != "open" || details[1].state != "open" {
-		t.Errorf("details = %v, want indices 0 and 1 open", details)
+	if details[0].state != "closed" || details[1].state != "closed" {
+		t.Errorf("details = %v, want indices 0 and 1 closed", details)
+	}
+	if details[0].stateReason != "not_planned" {
+		t.Errorf("expected stateReason not_planned, got %q", details[0].stateReason)
 	}
 	if !details[1].isDraft {
 		t.Errorf("expected isDraft true for index 1")
@@ -436,6 +448,23 @@ func TestFilterByState(t *testing.T) {
 	t.Run("closed excludes open items", func(t *testing.T) {
 		if got := filterByState(notifications, details, "closed"); len(got) != 0 {
 			t.Errorf("len = %d, want 0", len(got))
+		}
+	})
+
+	t.Run("not-planned keeps only matching closed issues", func(t *testing.T) {
+		items := []Notification{
+			{Subject: NotificationSubject{Title: "unplanned", Type: "Issue"}},
+			{Subject: NotificationSubject{Title: "completed", Type: "Issue"}},
+			{Subject: NotificationSubject{Title: "open", Type: "Issue"}},
+		}
+		d := map[int]itemDetail{
+			0: {state: "closed", stateReason: "not_planned"},
+			1: {state: "closed", stateReason: "completed"},
+			2: {state: "open"},
+		}
+		got := filterByState(items, d, "not-planned")
+		if len(got) != 1 || got[0].Subject.Title != "unplanned" {
+			t.Errorf("got %v, want only the not-planned issue", got)
 		}
 	})
 }
