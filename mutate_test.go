@@ -169,6 +169,38 @@ func TestRunMarkDoneConfirmed(t *testing.T) {
 	}
 }
 
+func TestRunUnsubscribeConfirmed(t *testing.T) {
+	doer := &recordingDoer{}
+	notifications := []Notification{
+		{ID: "9", Subject: NotificationSubject{Title: "A"}, Repository: NotificationRepo{FullName: "o/r"}},
+	}
+	var out bytes.Buffer
+	if err := runUnsubscribe(doer, notifications, false, strings.NewReader("y\n"), &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{
+		"DELETE notifications/threads/9/subscription",
+		"DELETE notifications/threads/9",
+	}
+	if len(doer.calls) != 2 || doer.calls[0] != want[0] || doer.calls[1] != want[1] {
+		t.Errorf("calls = %v, want %v", doer.calls, want)
+	}
+	if !strings.Contains(out.String(), "Unsubscribed from and marked 1 notification(s) as done") {
+		t.Errorf("unexpected output %q", out.String())
+	}
+}
+
+func TestUnsubscribeAndDoneStopsOnError(t *testing.T) {
+	doer := &recordingDoer{err: errors.New("boom")}
+	if err := unsubscribeAndDone(doer, "9"); err == nil {
+		t.Fatal("expected error to propagate")
+	}
+	// The subscription delete is attempted; the done delete must not run after it fails.
+	if len(doer.calls) != 1 || doer.calls[0] != "DELETE notifications/threads/9/subscription" {
+		t.Errorf("calls = %v, want only the subscription delete", doer.calls)
+	}
+}
+
 func TestParseArgsMarkReadAndDryRun(t *testing.T) {
 	opts, err := parseArgs([]string{"--mark-read", "--dry-run"})
 	if err != nil {
@@ -179,8 +211,16 @@ func TestParseArgsMarkReadAndDryRun(t *testing.T) {
 	}
 }
 
-func TestParseArgsMarkReadAndDoneConflict(t *testing.T) {
-	if _, err := parseArgs([]string{"--mark-read", "--mark-done"}); err == nil {
-		t.Error("expected error when combining --mark-read and --mark-done")
+func TestParseArgsMutationConflict(t *testing.T) {
+	conflicts := [][]string{
+		{"--mark-read", "--mark-done"},
+		{"--mark-read", "--unsubscribe"},
+		{"--mark-done", "--unsubscribe"},
+		{"--mark-read", "--mark-done", "--unsubscribe"},
+	}
+	for _, args := range conflicts {
+		if _, err := parseArgs(args); err == nil {
+			t.Errorf("expected error for %v", args)
+		}
 	}
 }

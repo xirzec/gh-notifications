@@ -40,6 +40,23 @@ func TestMarkCmd(t *testing.T) {
 			t.Errorf("calls = %v", doer.calls)
 		}
 	})
+
+	t.Run("unsubscribe issues DELETE subscription then DELETE thread", func(t *testing.T) {
+		doer := &recordingDoer{}
+		n := Notification{ID: "5", Subject: NotificationSubject{Title: "T"}}
+		msg := markCmd(doer, n, "unsubscribe")()
+		mm := msg.(markedMsg)
+		if mm.action != "unsubscribe" {
+			t.Errorf("action = %q", mm.action)
+		}
+		want := []string{
+			"DELETE notifications/threads/5/subscription",
+			"DELETE notifications/threads/5",
+		}
+		if len(doer.calls) != 2 || doer.calls[0] != want[0] || doer.calls[1] != want[1] {
+			t.Errorf("calls = %v, want %v", doer.calls, want)
+		}
+	})
 }
 
 func newTestPicker(t *testing.T, notifications []Notification, doer requestDoer) pickerModel {
@@ -78,6 +95,18 @@ func TestPickerMarkReadConfirmAndCancel(t *testing.T) {
 		}
 		if m.confirmAction != "done" {
 			t.Errorf("confirmAction = %q, want done", m.confirmAction)
+		}
+	})
+
+	t.Run("u enters confirming with unsubscribe action", func(t *testing.T) {
+		m := newTestPicker(t, notifications, &recordingDoer{})
+		updated, _ := m.Update(runeKey('u'))
+		m = updated.(pickerModel)
+		if !m.confirming {
+			t.Fatal("expected confirming state")
+		}
+		if m.confirmAction != "unsubscribe" {
+			t.Errorf("confirmAction = %q, want unsubscribe", m.confirmAction)
 		}
 	})
 

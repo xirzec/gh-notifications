@@ -52,11 +52,11 @@ type markedMsg struct {
 	err    error
 }
 
-// markCmd applies the given mark action ("read" or "done") to a notification
-// asynchronously.
+// markCmd applies the given thread action ("read", "done", or "unsubscribe") to
+// a notification asynchronously.
 func markCmd(doer requestDoer, n Notification, action string) tea.Cmd {
 	return func() tea.Msg {
-		err := markThread(doer, n.ID, action)
+		err := threadActions[action].apply(doer, n.ID)
 		return markedMsg{id: n.ID, title: n.Subject.Title, action: action, err: err}
 	}
 }
@@ -79,7 +79,7 @@ func newPickerModel(doer requestDoer, notifications []Notification) pickerModel 
 	}
 
 	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
-	l.Title = "Notifications  (enter: open · r: read · d: done · q: quit)"
+	l.Title = "Notifications  (enter: open · r: read · d: done · u: unsubscribe · q: quit)"
 	l.SetStatusBarItemName("notification", "notifications")
 
 	return pickerModel{list: l, doer: doer}
@@ -114,7 +114,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case markedMsg:
 		if msg.err != nil {
-			return m, m.list.NewStatusMessage("Error marking " + msg.action + ": " + msg.err.Error())
+			return m, m.list.NewStatusMessage("Error: " + msg.err.Error())
 		}
 		for i, it := range m.list.Items() {
 			if ni, ok := it.(notificationItem); ok && ni.n.ID == msg.id {
@@ -122,7 +122,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		return m, m.list.NewStatusMessage("Marked as " + msg.action + ": " + msg.title)
+		return m, m.list.NewStatusMessage(threadActions[msg.action].past + ": " + msg.title)
 
 	case tea.KeyMsg:
 		// Ctrl+C always quits, even while filtering or confirming.
@@ -139,7 +139,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "y", "Y":
 				return m, tea.Batch(
-					m.list.NewStatusMessage("Marking as "+action+"…"),
+					m.list.NewStatusMessage("Working…"),
 					markCmd(m.doer, target, action),
 				)
 			default:
@@ -159,13 +159,16 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						openCmd(m.doer, it.n),
 					)
 				}
-			case "r", "d":
+			case "r", "d", "u":
 				if it, ok := m.list.SelectedItem().(notificationItem); ok {
 					m.confirming = true
 					m.confirmTarget = it.n
-					if msg.String() == "d" {
+					switch msg.String() {
+					case "d":
 						m.confirmAction = "done"
-					} else {
+					case "u":
+						m.confirmAction = "unsubscribe"
+					default:
 						m.confirmAction = "read"
 					}
 					m.resizeList()
@@ -183,7 +186,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m pickerModel) View() string {
 	v := m.list.View()
 	if m.confirming {
-		v += fmt.Sprintf("\n\nMark \"%s\" as %s? (y/N) ", m.confirmTarget.Subject.Title, m.confirmAction)
+		v += "\n\n" + fmt.Sprintf(threadActions[m.confirmAction].prompt, m.confirmTarget.Subject.Title) + " (y/N) "
 	}
 	return v
 }

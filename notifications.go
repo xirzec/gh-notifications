@@ -66,6 +66,9 @@ type options struct {
 	// markDone, when true, marks the (filtered) notifications as done,
 	// removing them from the inbox.
 	markDone bool
+	// unsubscribe, when true, unsubscribes from the (filtered) notification
+	// threads.
+	unsubscribe bool
 	// dryRun, when true, reports what a mutating command would do without
 	// calling the API.
 	dryRun bool
@@ -87,6 +90,7 @@ func parseArgs(args []string) (options, error) {
 	fs.BoolVar(&opts.showReason, "show-reason", false, "Include the REASON column in the output")
 	fs.BoolVar(&opts.markRead, "mark-read", false, "Mark the matching notifications as read (asks for confirmation)")
 	fs.BoolVar(&opts.markDone, "mark-done", false, "Mark the matching notifications as done, removing them from the inbox (asks for confirmation)")
+	fs.BoolVar(&opts.unsubscribe, "unsubscribe", false, "Unsubscribe from the matching notification threads (asks for confirmation)")
 	fs.BoolVar(&opts.dryRun, "dry-run", false, "Show what a mutating command would do without calling the API")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
@@ -104,8 +108,14 @@ func parseArgs(args []string) (options, error) {
 			return options{}, fmt.Errorf("invalid state %q: expected open, closed, or merged", opts.state)
 		}
 	}
-	if opts.markRead && opts.markDone {
-		return options{}, fmt.Errorf("--mark-read and --mark-done cannot be used together")
+	mutations := 0
+	for _, set := range []bool{opts.markRead, opts.markDone, opts.unsubscribe} {
+		if set {
+			mutations++
+		}
+	}
+	if mutations > 1 {
+		return options{}, fmt.Errorf("only one of --mark-read, --mark-done, or --unsubscribe may be used at a time")
 	}
 	return opts, nil
 }
@@ -417,6 +427,9 @@ func runNotifications(opts options) error {
 	}
 	if opts.markDone {
 		return runMarkDone(client, notifications, opts.dryRun, os.Stdin, os.Stdout)
+	}
+	if opts.unsubscribe {
+		return runUnsubscribe(client, notifications, opts.dryRun, os.Stdin, os.Stdout)
 	}
 
 	if opts.interactive {

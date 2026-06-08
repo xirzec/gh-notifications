@@ -84,6 +84,7 @@ gh notifications -i
 - Navigation: arrow keys or `j`/`k` to move, `/` to filter, `enter` to open the highlighted entry
 - Press `r` to mark the highlighted notification as read; an in-list `y/N` confirmation is shown first, and on success the entry is removed from the list
 - Press `d` to mark the highlighted notification as done (removing it from the inbox); same `y/N` confirmation and removal behavior
+- Press `u` to unsubscribe from the highlighted notification thread (also marks it done); same `y/N` confirmation and removal behavior
 - After opening a notification, returns to the list so several can be opened in one session
 - Exit with `q` or `Ctrl+C`
 - Opens the selected thread's web page, resolved from the subject's `html_url`
@@ -125,5 +126,20 @@ gh notifications --mark-done --dry-run
 - Marks each thread as done via `DELETE /notifications/threads/{thread_id}`, removing it from the inbox entirely (unlike `--mark-read`, which only clears the unread flag)
 - Same confirmation and `--dry-run` safety behavior as `--mark-read`
 - `--mark-read` and `--mark-done` cannot be combined
+
+### Unsubscribe from Notifications
+
+Unsubscribe from the matching notification threads (and clear them from the inbox).
+
+```
+gh notifications --unsubscribe
+gh notifications --repo OWNER/REPO --state closed --unsubscribe
+gh notifications --unsubscribe --dry-run
+```
+
+- Operates on the notifications left after all filters are applied
+- For each thread, deletes the subscription via `DELETE /notifications/threads/{thread_id}/subscription` and then marks it done via `DELETE /notifications/threads/{thread_id}` — matching the GitHub web "Unsubscribe" action, which also removes the thread from the inbox
+- Same confirmation and `--dry-run` safety behavior as the mark commands
+- Only one of `--mark-read`, `--mark-done`, or `--unsubscribe` may be used at a time
 
 <!-- Add new features below as they are specified -->
