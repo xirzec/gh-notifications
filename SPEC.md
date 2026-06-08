@@ -89,6 +89,17 @@ gh notifications --state merged
 - Notifications without an issue/PR state (commits, releases, discussions, etc.) are excluded when this filter is active
 - States are fetched with batched GraphQL queries (up to 50 items per request) rather than one REST call per item, keeping the lookup fast and rate-limit friendly
 
+#### Filtering by draft status
+
+```
+gh notifications --draft
+gh notifications --repo OWNER/REPO --draft
+```
+
+- Keeps only draft pull requests
+- Issues and non-draft PRs are excluded
+- Uses the same batched GraphQL lookup as `--state` (the `isDraft` field); when both `--draft` and `--state` are given, they share a single set of GraphQL requests
+
 ### Open a Notification in the Browser
 
 Interactively pick a notification and open it in the default web browser.

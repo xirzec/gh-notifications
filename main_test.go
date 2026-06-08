@@ -305,11 +305,12 @@ func TestParseSubjectRef(t *testing.T) {
 }
 
 // fakeGQL is a test stand-in for the GraphQL client's Do method. It reports the
-// same state for every aliased item in the batch (or a null item when state is
-// empty), and returns err when set. When rl is set, it includes a rateLimit
-// object in the response.
+// same state (and draft flag) for every aliased item in the batch (or a null
+// item when state is empty), and returns err when set. When rl is set, it
+// includes a rateLimit object in the response.
 type fakeGQL struct {
 	state string // GraphQL enum, e.g. "OPEN", "CLOSED", "MERGED"
+	draft bool
 	err   error
 	calls int
 	rl    *rateLimit
@@ -330,7 +331,7 @@ func (f *fakeGQL) Do(query string, variables map[string]interface{}, response in
 	for j := 0; j < n; j++ {
 		var iopr interface{}
 		if f.state != "" {
-			iopr = map[string]interface{}{"state": f.state}
+			iopr = map[string]interface{}{"state": f.state, "isDraft": f.draft}
 		}
 		data[fmt.Sprintf("i%d", j)] = map[string]interface{}{"issueOrPullRequest": iopr}
 	}
@@ -345,7 +346,7 @@ func (f *fakeGQL) Do(query string, variables map[string]interface{}, response in
 	return json.Unmarshal(b, response)
 }
 
-func TestFetchItemStates(t *testing.T) {
+func TestFetchItemDetails(t *testing.T) {
 	notifications := []Notification{
 		{Subject: NotificationSubject{Type: "Issue", URL: "https://api.github.com/repos/o/r/issues/1"}},
 		{Subject: NotificationSubject{Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/2"}},
@@ -353,27 +354,30 @@ func TestFetchItemStates(t *testing.T) {
 		{Subject: NotificationSubject{Type: "Issue", URL: "not-a-url"}},
 	}
 
-	states, _ := fetchItemStates(&fakeGQL{state: "OPEN"}, notifications)
-	if len(states) != 2 {
-		t.Fatalf("len(states) = %d, want 2", len(states))
+	details, _ := fetchItemDetails(&fakeGQL{state: "OPEN", draft: true}, notifications)
+	if len(details) != 2 {
+		t.Fatalf("len(details) = %d, want 2", len(details))
 	}
-	if states[0] != "open" || states[1] != "open" {
-		t.Errorf("states = %v, want indices 0 and 1 open", states)
+	if details[0].state != "open" || details[1].state != "open" {
+		t.Errorf("details = %v, want indices 0 and 1 open", details)
 	}
-	if _, ok := states[2]; ok {
-		t.Error("release should not have a state")
+	if !details[1].isDraft {
+		t.Errorf("expected isDraft true for index 1")
 	}
-	if _, ok := states[3]; ok {
-		t.Error("unparseable url should not have a state")
+	if _, ok := details[2]; ok {
+		t.Error("release should not have details")
+	}
+	if _, ok := details[3]; ok {
+		t.Error("unparseable url should not have details")
 	}
 }
 
-func TestFetchItemStatesQuota(t *testing.T) {
+func TestFetchItemDetailsQuota(t *testing.T) {
 	notifications := []Notification{
 		{Subject: NotificationSubject{Type: "Issue", URL: "https://api.github.com/repos/o/r/issues/1"}},
 	}
 	fake := &fakeGQL{state: "OPEN", rl: &rateLimit{remaining: 4990, limit: 5000, reset: time.Unix(1700000000, 0)}}
-	_, quota := fetchItemStates(fake, notifications)
+	_, quota := fetchItemDetails(fake, notifications)
 	if quota == nil {
 		t.Fatal("expected a GraphQL quota")
 	}
@@ -382,7 +386,7 @@ func TestFetchItemStatesQuota(t *testing.T) {
 	}
 }
 
-func TestFetchItemStatesBatches(t *testing.T) {
+func TestFetchItemDetailsBatches(t *testing.T) {
 	notifications := make([]Notification, stateBatchSize+5)
 	for i := range notifications {
 		notifications[i] = Notification{Subject: NotificationSubject{
@@ -391,9 +395,9 @@ func TestFetchItemStatesBatches(t *testing.T) {
 		}}
 	}
 	fake := &fakeGQL{state: "CLOSED"}
-	states, _ := fetchItemStates(fake, notifications)
-	if len(states) != len(notifications) {
-		t.Errorf("len(states) = %d, want %d", len(states), len(notifications))
+	details, _ := fetchItemDetails(fake, notifications)
+	if len(details) != len(notifications) {
+		t.Errorf("len(details) = %d, want %d", len(details), len(notifications))
 	}
 	if fake.calls != 2 {
 		t.Errorf("expected 2 batched calls, got %d", fake.calls)
@@ -402,19 +406,23 @@ func TestFetchItemStatesBatches(t *testing.T) {
 
 func TestFilterByState(t *testing.T) {
 	notifications := []Notification{
-		{Subject: NotificationSubject{Title: "issue", Type: "Issue", URL: "https://api.github.com/repos/o/r/issues/1"}},
-		{Subject: NotificationSubject{Title: "pr", Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/2"}},
-		{Subject: NotificationSubject{Title: "release", Type: "Release", URL: "https://api.github.com/repos/o/r/releases/3"}},
+		{Subject: NotificationSubject{Title: "issue", Type: "Issue"}},
+		{Subject: NotificationSubject{Title: "pr", Type: "PullRequest"}},
+		{Subject: NotificationSubject{Title: "release", Type: "Release"}},
+	}
+	details := map[int]itemDetail{
+		0: {state: "open"},
+		1: {state: "open"},
 	}
 
 	t.Run("empty returns all", func(t *testing.T) {
-		if got, _ := filterByState(&fakeGQL{}, notifications, ""); len(got) != 3 {
+		if got := filterByState(notifications, details, ""); len(got) != 3 {
 			t.Errorf("len = %d, want 3", len(got))
 		}
 	})
 
 	t.Run("open keeps issue and pr, drops release", func(t *testing.T) {
-		got, _ := filterByState(&fakeGQL{state: "OPEN"}, notifications, "open")
+		got := filterByState(notifications, details, "open")
 		if len(got) != 2 {
 			t.Fatalf("len = %d, want 2", len(got))
 		}
@@ -426,22 +434,37 @@ func TestFilterByState(t *testing.T) {
 	})
 
 	t.Run("closed excludes open items", func(t *testing.T) {
-		if got, _ := filterByState(&fakeGQL{state: "OPEN"}, notifications, "closed"); len(got) != 0 {
+		if got := filterByState(notifications, details, "closed"); len(got) != 0 {
 			t.Errorf("len = %d, want 0", len(got))
 		}
 	})
+}
 
-	t.Run("merged matches merged state", func(t *testing.T) {
-		if got, _ := filterByState(&fakeGQL{state: "MERGED"}, notifications, "merged"); len(got) != 2 {
-			t.Errorf("len = %d, want 2", len(got))
+func TestFilterByDraft(t *testing.T) {
+	notifications := []Notification{
+		{Subject: NotificationSubject{Title: "draft pr", Type: "PullRequest"}},
+		{Subject: NotificationSubject{Title: "ready pr", Type: "PullRequest"}},
+		{Subject: NotificationSubject{Title: "issue", Type: "Issue"}},
+	}
+	details := map[int]itemDetail{
+		0: {state: "open", isDraft: true},
+		1: {state: "open", isDraft: false},
+		2: {state: "open", isDraft: false},
+	}
+
+	t.Run("false returns all", func(t *testing.T) {
+		if got := filterByDraft(notifications, details, false); len(got) != 3 {
+			t.Errorf("len = %d, want 3", len(got))
 		}
 	})
 
-	t.Run("returns graphql quota", func(t *testing.T) {
-		fake := &fakeGQL{state: "OPEN", rl: &rateLimit{remaining: 4900, limit: 5000}}
-		_, quota := filterByState(fake, notifications, "open")
-		if quota == nil || quota.remaining != 4900 {
-			t.Errorf("quota = %+v", quota)
+	t.Run("keeps only draft PRs", func(t *testing.T) {
+		got := filterByDraft(notifications, details, true)
+		if len(got) != 1 {
+			t.Fatalf("len = %d, want 1", len(got))
+		}
+		if got[0].Subject.Title != "draft pr" {
+			t.Errorf("kept %q", got[0].Subject.Title)
 		}
 	})
 }

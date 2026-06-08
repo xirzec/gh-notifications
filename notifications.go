@@ -56,6 +56,9 @@ type options struct {
 	// state, when set, keeps only issues/PRs in the given state
 	// (open, closed, or merged). Requires fetching each item.
 	state string
+	// draft, when true, keeps only draft pull requests. Requires fetching
+	// each item.
+	draft bool
 	// interactive, when true, prompts the user to pick a notification to
 	// open in a web browser instead of printing the table.
 	interactive bool
@@ -85,6 +88,7 @@ func parseArgs(args []string) (options, error) {
 	fs.StringVar(&opts.itemType, "type", "", "Keep only notifications of this type (issue, pr, commit, release, discussion, ...)")
 	fs.StringVar(&opts.itemType, "t", "", "Keep only notifications of this type (shorthand)")
 	fs.StringVar(&opts.state, "state", "", "Keep only issues/PRs in this state (open, closed, merged)")
+	fs.BoolVar(&opts.draft, "draft", false, "Keep only draft pull requests")
 	fs.BoolVar(&opts.interactive, "interactive", false, "Interactively select a notification to open in the browser")
 	fs.BoolVar(&opts.interactive, "i", false, "Interactively select a notification to open in the browser (shorthand)")
 	fs.BoolVar(&opts.showReason, "show-reason", false, "Include the REASON column in the output")
@@ -235,12 +239,18 @@ func parseGraphQLRateLimit(raw json.RawMessage) (rateLimit, bool) {
 	return rl, true
 }
 
-// fetchItemStates returns a map from notification index to its normalized state
-// ("open"/"closed"/"merged"), fetched in batches via a single GraphQL query per
-// batch. Notifications that are not issues/PRs, or whose subject URL cannot be
-// parsed, are absent from the map. The second return value, when non-nil, is the
-// GraphQL API quota reported by the most recent batch.
-func fetchItemStates(doer graphQLDoer, notifications []Notification) (map[int]string, *rateLimit) {
+// itemDetail holds the GraphQL-fetched attributes of an issue or pull request.
+type itemDetail struct {
+	state   string // normalized: "open", "closed", or "merged"
+	isDraft bool   // true only for draft pull requests
+}
+
+// fetchItemDetails returns a map from notification index to its issue/PR detail,
+// fetched in batches via a single GraphQL query per batch. Notifications that
+// are not issues/PRs, or whose subject URL cannot be parsed, are absent from the
+// map. The second return value, when non-nil, is the GraphQL API quota reported
+// by the most recent batch.
+func fetchItemDetails(doer graphQLDoer, notifications []Notification) (map[int]itemDetail, *rateLimit) {
 	type entry struct {
 		idx int
 		ref subjectRef
@@ -255,7 +265,7 @@ func fetchItemStates(doer graphQLDoer, notifications []Notification) (map[int]st
 		}
 	}
 
-	states := make(map[int]string)
+	details := make(map[int]itemDetail)
 	var quota *rateLimit
 	for start := 0; start < len(entries); start += stateBatchSize {
 		end := start + stateBatchSize
@@ -271,7 +281,7 @@ func fetchItemStates(doer graphQLDoer, notifications []Notification) (map[int]st
 			o, r, num := fmt.Sprintf("o%d", j), fmt.Sprintf("r%d", j), fmt.Sprintf("n%d", j)
 			params = append(params, fmt.Sprintf("$%s:String!,$%s:String!,$%s:Int!", o, r, num))
 			fields = append(fields, fmt.Sprintf(
-				"i%d: repository(owner:$%s,name:$%s){issueOrPullRequest(number:$%s){__typename ... on Issue{state} ... on PullRequest{state}}}",
+				"i%d: repository(owner:$%s,name:$%s){issueOrPullRequest(number:$%s){__typename ... on Issue{state} ... on PullRequest{state isDraft}}}",
 				j, o, r, num))
 			variables[o] = e.ref.owner
 			variables[r] = e.ref.repo
@@ -298,35 +308,49 @@ func fetchItemStates(doer graphQLDoer, notifications []Notification) (map[int]st
 			}
 			var node struct {
 				IssueOrPullRequest *struct {
-					State string `json:"state"`
+					State   string `json:"state"`
+					IsDraft bool   `json:"isDraft"`
 				} `json:"issueOrPullRequest"`
 			}
 			if err := json.Unmarshal(itemRaw, &node); err == nil && node.IssueOrPullRequest != nil {
-				states[e.idx] = strings.ToLower(node.IssueOrPullRequest.State)
+				details[e.idx] = itemDetail{
+					state:   strings.ToLower(node.IssueOrPullRequest.State),
+					isDraft: node.IssueOrPullRequest.IsDraft,
+				}
 			}
 		}
 	}
-	return states, quota
+	return details, quota
 }
 
-// filterByState keeps only issues/PRs whose state matches the requested state.
-// Subjects without an issue/PR state (commits, releases, etc.) are excluded. An
-// empty state returns the input unchanged. States are fetched via batched
-// GraphQL queries to avoid a per-item REST request. The second return value,
-// when non-nil, is the GraphQL API quota observed during the lookup.
-func filterByState(doer graphQLDoer, notifications []Notification, state string) ([]Notification, *rateLimit) {
+// filterByState keeps only issues/PRs whose state matches the requested state,
+// using pre-fetched details. An empty state returns the input unchanged.
+func filterByState(notifications []Notification, details map[int]itemDetail, state string) []Notification {
 	if state == "" {
-		return notifications, nil
+		return notifications
 	}
-
-	states, quota := fetchItemStates(doer, notifications)
 	filtered := make([]Notification, 0, len(notifications))
 	for i, n := range notifications {
-		if s, ok := states[i]; ok && matchesState(s, state) {
+		if d, ok := details[i]; ok && matchesState(d.state, state) {
 			filtered = append(filtered, n)
 		}
 	}
-	return filtered, quota
+	return filtered
+}
+
+// filterByDraft keeps only draft pull requests, using pre-fetched details. When
+// draft is false it returns the input unchanged.
+func filterByDraft(notifications []Notification, details map[int]itemDetail, draft bool) []Notification {
+	if !draft {
+		return notifications
+	}
+	filtered := make([]Notification, 0, len(notifications))
+	for i, n := range notifications {
+		if d, ok := details[i]; ok && d.isDraft {
+			filtered = append(filtered, n)
+		}
+	}
+	return filtered
 }
 
 // notificationsEndpoint returns the REST endpoint for the given options.
@@ -450,14 +474,15 @@ func runNotifications(opts options) error {
 
 	notifications = filterByTitle(notifications, opts.filter)
 	notifications = filterByType(notifications, opts.itemType)
-	if opts.state != "" {
+	if opts.state != "" || opts.draft {
 		gqlClient, err := api.DefaultGraphQLClient()
 		if err != nil {
 			return err
 		}
-		var gqlQuota *rateLimit
-		notifications, gqlQuota = filterByState(gqlClient, notifications, opts.state)
+		details, gqlQuota := fetchItemDetails(gqlClient, notifications)
 		tracker.setGraphQL(gqlQuota)
+		notifications = filterByState(notifications, details, opts.state)
+		notifications = filterByDraft(notifications, details, opts.draft)
 	}
 
 	if opts.markRead {
