@@ -24,7 +24,24 @@ gh notifications  # run as an installed gh extension
 - Uses `github.com/cli/go-gh/v2` for authenticated REST/GraphQL API clients
 - Released via `cli/gh-extension-precompile` GitHub Action on version tags (`v*`)
 
+## Testing against the live API
+
+The extension runs against the signed-in user's **real** GitHub notifications. To avoid
+accidentally destroying notification state, follow these rules:
+
+- Only run the built binary against the live API for **read-only** commands (listing and
+  filtering). These never mutate server state.
+- **Never** run mutating commands (e.g. mark-as-read, mark-as-done, unsubscribe) against the
+  live API during development. Marking notifications read/done is effectively irreversible and
+  can lose the working set used for testing.
+- Test mutating behavior with unit tests and fake clients via the `requestDoer` and
+  `graphQLDoer` interfaces — do not exercise it with a live `api.DefaultRESTClient()`.
+- If a mutating command must be tried end-to-end, use a throwaway test account, not the
+  developer's primary account.
+
 ## Conventions
 
 - Extension binary is named `gh-notifications.exe` (matches repo name without `gh-` prefix for `gh` dispatch)
 - Use `api.DefaultRESTClient()` for authenticated GitHub API calls (inherits `gh` auth)
+- API access is abstracted behind the `requestDoer` (REST) and `graphQLDoer` (GraphQL)
+  interfaces so logic can be unit tested with fakes instead of live calls
