@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -261,64 +263,135 @@ func TestParseArgsState(t *testing.T) {
 
 func TestMatchesState(t *testing.T) {
 	cases := []struct {
-		state itemState
+		state string
 		want  string
 		match bool
 	}{
-		{itemState{State: "open"}, "open", true},
-		{itemState{State: "closed"}, "open", false},
-		{itemState{State: "closed"}, "closed", true},
-		{itemState{State: "closed", Merged: true}, "closed", false},
-		{itemState{State: "closed", Merged: true}, "merged", true},
-		{itemState{State: "open"}, "merged", false},
-		{itemState{State: "open"}, "bogus", false},
+		{"open", "open", true},
+		{"closed", "open", false},
+		{"closed", "closed", true},
+		{"merged", "closed", false},
+		{"merged", "merged", true},
+		{"open", "merged", false},
 	}
 	for _, c := range cases {
 		if got := matchesState(c.state, c.want); got != c.match {
-			t.Errorf("matchesState(%+v, %q) = %v, want %v", c.state, c.want, got, c.match)
+			t.Errorf("matchesState(%q, %q) = %v, want %v", c.state, c.want, got, c.match)
 		}
 	}
 }
 
-func TestFetchItemState(t *testing.T) {
-	n := Notification{Subject: NotificationSubject{URL: "https://api.github.com/repos/o/r/pulls/1"}}
-
-	t.Run("decodes state", func(t *testing.T) {
-		s, ok := fetchItemState(fakeDoer{body: `{"state":"closed","merged":true}`}, n)
-		if !ok || s.State != "closed" || !s.Merged {
-			t.Errorf("got %+v ok=%v", s, ok)
+func TestParseSubjectRef(t *testing.T) {
+	t.Run("issue url", func(t *testing.T) {
+		ref, ok := parseSubjectRef("https://api.github.com/repos/octo/repo/issues/123")
+		if !ok || ref.owner != "octo" || ref.repo != "repo" || ref.number != 123 {
+			t.Errorf("got %+v ok=%v", ref, ok)
 		}
 	})
-
-	t.Run("no subject url", func(t *testing.T) {
-		if _, ok := fetchItemState(fakeDoer{}, Notification{}); ok {
-			t.Error("expected ok=false without subject url")
+	t.Run("pull url", func(t *testing.T) {
+		ref, ok := parseSubjectRef("https://api.github.com/repos/octo/repo/pulls/45")
+		if !ok || ref.number != 45 {
+			t.Errorf("got %+v ok=%v", ref, ok)
 		}
 	})
-
-	t.Run("request error", func(t *testing.T) {
-		if _, ok := fetchItemState(fakeDoer{err: errors.New("boom")}, n); ok {
-			t.Error("expected ok=false on request error")
+	t.Run("unparseable url", func(t *testing.T) {
+		if _, ok := parseSubjectRef("https://api.github.com/repos/octo/repo/releases/3"); ok {
+			t.Error("expected ok=false for release url")
+		}
+		if _, ok := parseSubjectRef(""); ok {
+			t.Error("expected ok=false for empty url")
 		}
 	})
+}
+
+// fakeGQL is a test stand-in for the GraphQL client's Do method. It reports the
+// same state for every aliased item in the batch (or a null item when state is
+// empty), and returns err when set.
+type fakeGQL struct {
+	state string // GraphQL enum, e.g. "OPEN", "CLOSED", "MERGED"
+	err   error
+	calls int
+}
+
+func (f *fakeGQL) Do(query string, variables map[string]interface{}, response interface{}) error {
+	f.calls++
+	if f.err != nil {
+		return f.err
+	}
+	n := 0
+	for k := range variables {
+		if strings.HasPrefix(k, "o") {
+			n++
+		}
+	}
+	data := map[string]map[string]interface{}{}
+	for j := 0; j < n; j++ {
+		var iopr interface{}
+		if f.state != "" {
+			iopr = map[string]interface{}{"state": f.state}
+		}
+		data[fmt.Sprintf("i%d", j)] = map[string]interface{}{"issueOrPullRequest": iopr}
+	}
+	b, _ := json.Marshal(data)
+	return json.Unmarshal(b, response)
+}
+
+func TestFetchItemStates(t *testing.T) {
+	notifications := []Notification{
+		{Subject: NotificationSubject{Type: "Issue", URL: "https://api.github.com/repos/o/r/issues/1"}},
+		{Subject: NotificationSubject{Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/2"}},
+		{Subject: NotificationSubject{Type: "Release", URL: "https://api.github.com/repos/o/r/releases/3"}},
+		{Subject: NotificationSubject{Type: "Issue", URL: "not-a-url"}},
+	}
+
+	states := fetchItemStates(&fakeGQL{state: "OPEN"}, notifications)
+	if len(states) != 2 {
+		t.Fatalf("len(states) = %d, want 2", len(states))
+	}
+	if states[0] != "open" || states[1] != "open" {
+		t.Errorf("states = %v, want indices 0 and 1 open", states)
+	}
+	if _, ok := states[2]; ok {
+		t.Error("release should not have a state")
+	}
+	if _, ok := states[3]; ok {
+		t.Error("unparseable url should not have a state")
+	}
+}
+
+func TestFetchItemStatesBatches(t *testing.T) {
+	notifications := make([]Notification, stateBatchSize+5)
+	for i := range notifications {
+		notifications[i] = Notification{Subject: NotificationSubject{
+			Type: "Issue",
+			URL:  fmt.Sprintf("https://api.github.com/repos/o/r/issues/%d", i+1),
+		}}
+	}
+	fake := &fakeGQL{state: "CLOSED"}
+	states := fetchItemStates(fake, notifications)
+	if len(states) != len(notifications) {
+		t.Errorf("len(states) = %d, want %d", len(states), len(notifications))
+	}
+	if fake.calls != 2 {
+		t.Errorf("expected 2 batched calls, got %d", fake.calls)
+	}
 }
 
 func TestFilterByState(t *testing.T) {
 	notifications := []Notification{
-		{Subject: NotificationSubject{Title: "issue", Type: "Issue", URL: "https://api/1"}},
-		{Subject: NotificationSubject{Title: "pr", Type: "PullRequest", URL: "https://api/2"}},
-		{Subject: NotificationSubject{Title: "release", Type: "Release", URL: "https://api/3"}},
+		{Subject: NotificationSubject{Title: "issue", Type: "Issue", URL: "https://api.github.com/repos/o/r/issues/1"}},
+		{Subject: NotificationSubject{Title: "pr", Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/2"}},
+		{Subject: NotificationSubject{Title: "release", Type: "Release", URL: "https://api.github.com/repos/o/r/releases/3"}},
 	}
 
 	t.Run("empty returns all", func(t *testing.T) {
-		if got := filterByState(fakeDoer{}, notifications, ""); len(got) != 3 {
+		if got := filterByState(&fakeGQL{}, notifications, ""); len(got) != 3 {
 			t.Errorf("len = %d, want 3", len(got))
 		}
 	})
 
 	t.Run("open keeps issue and pr, drops release", func(t *testing.T) {
-		// fakeDoer returns the same open state for every request.
-		got := filterByState(fakeDoer{body: `{"state":"open"}`}, notifications, "open")
+		got := filterByState(&fakeGQL{state: "OPEN"}, notifications, "open")
 		if len(got) != 2 {
 			t.Fatalf("len = %d, want 2", len(got))
 		}
@@ -330,8 +403,14 @@ func TestFilterByState(t *testing.T) {
 	})
 
 	t.Run("closed excludes open items", func(t *testing.T) {
-		if got := filterByState(fakeDoer{body: `{"state":"open"}`}, notifications, "closed"); len(got) != 0 {
+		if got := filterByState(&fakeGQL{state: "OPEN"}, notifications, "closed"); len(got) != 0 {
 			t.Errorf("len = %d, want 0", len(got))
+		}
+	})
+
+	t.Run("merged matches merged state", func(t *testing.T) {
+		if got := filterByState(&fakeGQL{state: "MERGED"}, notifications, "merged"); len(got) != 2 {
+			t.Errorf("len = %d, want 2", len(got))
 		}
 	})
 }

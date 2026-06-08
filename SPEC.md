@@ -66,9 +66,9 @@ gh notifications --state merged
 ```
 
 - Keeps only issues/PRs in the given state: `open`, `closed`, or `merged`
-- `closed` excludes merged pull requests (those are matched by `merged`)
+- `closed` matches only non-merged closed items; merged pull requests are matched by `merged`
 - Notifications without an issue/PR state (commits, releases, discussions, etc.) are excluded when this filter is active
-- Requires an extra API request per item to read its state; these run concurrently. Combine with `--repo`/`--filter`/`--type` to reduce the number of lookups
+- States are fetched with batched GraphQL queries (up to 50 items per request) rather than one REST call per item, keeping the lookup fast and rate-limit friendly
 
 ### Open a Notification in the Browser
 

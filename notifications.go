@@ -7,8 +7,8 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
@@ -147,81 +147,126 @@ func filterByType(notifications []Notification, itemType string) []Notification 
 	return filtered
 }
 
-// itemState holds the open/closed/merged status of an issue or pull request.
-type itemState struct {
-	State  string `json:"state"`
-	Merged bool   `json:"merged"`
+// graphQLDoer is the subset of api.GraphQLClient used to batch-fetch item
+// states. It allows the batching logic to be unit tested with a fake.
+type graphQLDoer interface {
+	Do(query string, variables map[string]interface{}, response interface{}) error
 }
 
-// matchesState reports whether an item's state satisfies the requested filter.
-// "closed" excludes merged pull requests, which are matched by "merged".
-func matchesState(s itemState, want string) bool {
-	switch strings.ToLower(want) {
-	case "open":
-		return strings.EqualFold(s.State, "open")
-	case "closed":
-		return strings.EqualFold(s.State, "closed") && !s.Merged
-	case "merged":
-		return s.Merged
-	default:
-		return false
-	}
+// subjectRef identifies an issue or pull request by repository and number.
+type subjectRef struct {
+	owner  string
+	repo   string
+	number int
 }
 
-// fetchItemState retrieves the state of a notification's subject (issue or PR).
-func fetchItemState(doer requestDoer, n Notification) (itemState, bool) {
-	if n.Subject.URL == "" {
-		return itemState{}, false
+// subjectURLRE extracts owner/repo/number from a notification subject API URL,
+// e.g. https://api.github.com/repos/OWNER/REPO/issues/123 or .../pulls/123.
+var subjectURLRE = regexp.MustCompile(`/repos/([^/]+)/([^/]+)/(?:issues|pulls)/(\d+)`)
+
+// parseSubjectRef parses an issue/PR reference from a subject API URL.
+func parseSubjectRef(apiURL string) (subjectRef, bool) {
+	m := subjectURLRE.FindStringSubmatch(apiURL)
+	if m == nil {
+		return subjectRef{}, false
 	}
-	resp, err := doer.Request(http.MethodGet, n.Subject.URL, nil)
+	number, err := strconv.Atoi(m[3])
 	if err != nil {
-		return itemState{}, false
+		return subjectRef{}, false
 	}
-	var s itemState
-	decodeErr := json.NewDecoder(resp.Body).Decode(&s)
-	resp.Body.Close()
-	if decodeErr != nil {
-		return itemState{}, false
-	}
-	return s, true
+	return subjectRef{owner: m[1], repo: m[2], number: number}, true
 }
 
-// stateFetchConcurrency bounds the number of concurrent state lookups.
-const stateFetchConcurrency = 10
+// matchesState reports whether a normalized item state ("open", "closed", or
+// "merged") satisfies the requested filter. With GraphQL, a merged pull request
+// reports state "merged" rather than "closed", so the comparison is exact.
+func matchesState(state, want string) bool {
+	return strings.EqualFold(state, want)
+}
 
-// filterByState keeps only issues/PRs whose fetched state matches the requested
-// state. Subjects without a state (commits, releases, etc.) are excluded. An
-// empty state returns the input unchanged. State lookups run concurrently.
-func filterByState(doer requestDoer, notifications []Notification, state string) []Notification {
+// stateBatchSize bounds how many items are requested per GraphQL call to keep
+// query complexity within the API's limits.
+const stateBatchSize = 50
+
+// isIssueOrPR reports whether the subject type can have an open/closed state.
+func isIssueOrPR(subjectType string) bool {
+	return strings.EqualFold(subjectType, "Issue") || strings.EqualFold(subjectType, "PullRequest")
+}
+
+// fetchItemStates returns a map from notification index to its normalized state
+// ("open"/"closed"/"merged"), fetched in batches via a single GraphQL query per
+// batch. Notifications that are not issues/PRs, or whose subject URL cannot be
+// parsed, are absent from the map.
+func fetchItemStates(doer graphQLDoer, notifications []Notification) map[int]string {
+	type entry struct {
+		idx int
+		ref subjectRef
+	}
+	var entries []entry
+	for i, n := range notifications {
+		if !isIssueOrPR(n.Subject.Type) {
+			continue
+		}
+		if ref, ok := parseSubjectRef(n.Subject.URL); ok {
+			entries = append(entries, entry{idx: i, ref: ref})
+		}
+	}
+
+	states := make(map[int]string)
+	for start := 0; start < len(entries); start += stateBatchSize {
+		end := start + stateBatchSize
+		if end > len(entries) {
+			end = len(entries)
+		}
+		batch := entries[start:end]
+
+		params := make([]string, 0, len(batch))
+		fields := make([]string, 0, len(batch))
+		variables := make(map[string]interface{}, len(batch)*3)
+		for j, e := range batch {
+			o, r, num := fmt.Sprintf("o%d", j), fmt.Sprintf("r%d", j), fmt.Sprintf("n%d", j)
+			params = append(params, fmt.Sprintf("$%s:String!,$%s:String!,$%s:Int!", o, r, num))
+			fields = append(fields, fmt.Sprintf(
+				"i%d: repository(owner:$%s,name:$%s){issueOrPullRequest(number:$%s){__typename ... on Issue{state} ... on PullRequest{state}}}",
+				j, o, r, num))
+			variables[o] = e.ref.owner
+			variables[r] = e.ref.repo
+			variables[num] = e.ref.number
+		}
+		query := fmt.Sprintf("query(%s){%s}", strings.Join(params, ","), strings.Join(fields, "\n"))
+
+		var resp map[string]struct {
+			IssueOrPullRequest *struct {
+				State string `json:"state"`
+			} `json:"issueOrPullRequest"`
+		}
+		if err := doer.Do(query, variables, &resp); err != nil {
+			continue
+		}
+		for j, e := range batch {
+			node := resp[fmt.Sprintf("i%d", j)]
+			if node.IssueOrPullRequest != nil {
+				states[e.idx] = strings.ToLower(node.IssueOrPullRequest.State)
+			}
+		}
+	}
+	return states
+}
+
+// filterByState keeps only issues/PRs whose state matches the requested state.
+// Subjects without an issue/PR state (commits, releases, etc.) are excluded. An
+// empty state returns the input unchanged. States are fetched via batched
+// GraphQL queries to avoid a per-item REST request.
+func filterByState(doer graphQLDoer, notifications []Notification, state string) []Notification {
 	if state == "" {
 		return notifications
 	}
 
-	keep := make([]bool, len(notifications))
-	sem := make(chan struct{}, stateFetchConcurrency)
-	var wg sync.WaitGroup
-
-	for i := range notifications {
-		n := notifications[i]
-		if !strings.EqualFold(n.Subject.Type, "Issue") && !strings.EqualFold(n.Subject.Type, "PullRequest") {
-			continue
-		}
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int, n Notification) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			if s, ok := fetchItemState(doer, n); ok && matchesState(s, state) {
-				keep[idx] = true
-			}
-		}(i, n)
-	}
-	wg.Wait()
-
+	states := fetchItemStates(doer, notifications)
 	filtered := make([]Notification, 0, len(notifications))
-	for i, k := range keep {
-		if k {
-			filtered = append(filtered, notifications[i])
+	for i, n := range notifications {
+		if s, ok := states[i]; ok && matchesState(s, state) {
+			filtered = append(filtered, n)
 		}
 	}
 	return filtered
@@ -344,7 +389,13 @@ func runNotifications(opts options) error {
 
 	notifications = filterByTitle(notifications, opts.filter)
 	notifications = filterByType(notifications, opts.itemType)
-	notifications = filterByState(client, notifications, opts.state)
+	if opts.state != "" {
+		gqlClient, err := api.DefaultGraphQLClient()
+		if err != nil {
+			return err
+		}
+		notifications = filterByState(gqlClient, notifications, opts.state)
+	}
 
 	if opts.interactive {
 		return selectAndOpen(client, notifications)
