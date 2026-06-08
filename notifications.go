@@ -48,9 +48,14 @@ type options struct {
 	// filter, when set, keeps only notifications whose title contains it
 	// (case-insensitive).
 	filter string
+	// itemType, when set, keeps only notifications of a given subject type
+	// (e.g. issue, pr).
+	itemType string
 	// interactive, when true, prompts the user to pick a notification to
 	// open in a web browser instead of printing the table.
 	interactive bool
+	// showReason, when true, includes the REASON column in the table output.
+	showReason bool
 }
 
 // parseArgs parses command-line arguments into options.
@@ -61,8 +66,11 @@ func parseArgs(args []string) (options, error) {
 	fs.StringVar(&opts.repo, "R", "", "Filter notifications by repository (OWNER/REPO) (shorthand)")
 	fs.StringVar(&opts.filter, "filter", "", "Keep only notifications whose title contains this text (case-insensitive)")
 	fs.StringVar(&opts.filter, "f", "", "Keep only notifications whose title contains this text (case-insensitive) (shorthand)")
+	fs.StringVar(&opts.itemType, "type", "", "Keep only notifications of this type (issue, pr, commit, release, discussion, ...)")
+	fs.StringVar(&opts.itemType, "t", "", "Keep only notifications of this type (shorthand)")
 	fs.BoolVar(&opts.interactive, "interactive", false, "Interactively select a notification to open in the browser")
 	fs.BoolVar(&opts.interactive, "i", false, "Interactively select a notification to open in the browser (shorthand)")
+	fs.BoolVar(&opts.showReason, "show-reason", false, "Include the REASON column in the output")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -85,6 +93,42 @@ func filterByTitle(notifications []Notification, filter string) []Notification {
 	filtered := make([]Notification, 0, len(notifications))
 	for _, n := range notifications {
 		if strings.Contains(strings.ToLower(n.Subject.Title), needle) {
+			filtered = append(filtered, n)
+		}
+	}
+	return filtered
+}
+
+// canonicalType maps a user-supplied type name (with friendly aliases such as
+// "pr" or "issue") to the subject type string used by the notifications API.
+// Unrecognized values are returned unchanged so any subject type can be matched.
+func canonicalType(s string) string {
+	switch strings.ToLower(strings.ReplaceAll(s, "-", "")) {
+	case "pr", "pull", "pulls", "pullrequest", "pullrequests":
+		return "PullRequest"
+	case "issue", "issues":
+		return "Issue"
+	case "commit", "commits":
+		return "Commit"
+	case "release", "releases":
+		return "Release"
+	case "discussion", "discussions":
+		return "Discussion"
+	default:
+		return s
+	}
+}
+
+// filterByType returns the notifications whose subject type matches the given
+// type, accepting friendly aliases. An empty type returns the input unchanged.
+func filterByType(notifications []Notification, itemType string) []Notification {
+	if itemType == "" {
+		return notifications
+	}
+	want := canonicalType(itemType)
+	filtered := make([]Notification, 0, len(notifications))
+	for _, n := range notifications {
+		if strings.EqualFold(n.Subject.Type, want) {
 			filtered = append(filtered, n)
 		}
 	}
@@ -141,18 +185,37 @@ func fetchNotifications(client *api.RESTClient, opts options) ([]Notification, e
 	return all, nil
 }
 
-// renderNotifications writes the notifications to out as a table.
-func renderNotifications(out io.Writer, notifications []Notification, isTTY bool, width int) error {
+// displayType returns a concise label for a notification's subject type,
+// shortening the verbose "PullRequest" to "PR".
+func displayType(subjectType string) string {
+	if subjectType == "PullRequest" {
+		return "PR"
+	}
+	return subjectType
+}
+
+// renderNotifications writes the notifications to out as a table. The REASON
+// column is included only when showReason is true.
+func renderNotifications(out io.Writer, notifications []Notification, isTTY bool, width int, showReason bool) error {
 	if len(notifications) == 0 {
 		_, err := fmt.Fprintln(out, "No unread notifications")
 		return err
 	}
 
 	t := tableprinter.New(out, isTTY, width)
-	t.AddHeader([]string{"REPOSITORY", "REASON", "TITLE", "AGE"})
+	header := []string{"REPOSITORY", "TYPE"}
+	if showReason {
+		header = append(header, "REASON")
+	}
+	header = append(header, "TITLE", "AGE")
+	t.AddHeader(header)
+
 	for _, n := range notifications {
 		t.AddField(n.Repository.FullName)
-		t.AddField(n.Reason)
+		t.AddField(displayType(n.Subject.Type))
+		if showReason {
+			t.AddField(n.Reason)
+		}
 		t.AddField(n.Subject.Title)
 		t.AddField(relativeAge(n.UpdatedAt, time.Now()))
 		t.EndRow()
@@ -188,6 +251,7 @@ func runNotifications(opts options) error {
 	}
 
 	notifications = filterByTitle(notifications, opts.filter)
+	notifications = filterByType(notifications, opts.itemType)
 
 	if opts.interactive {
 		return selectAndOpen(client, notifications)
@@ -195,7 +259,7 @@ func runNotifications(opts options) error {
 
 	terminal := term.FromEnv()
 	width, _, _ := terminal.Size()
-	return renderNotifications(terminal.Out(), notifications, terminal.IsTerminalOutput(), width)
+	return renderNotifications(terminal.Out(), notifications, terminal.IsTerminalOutput(), width, opts.showReason)
 }
 
 // requestDoer is the subset of api.RESTClient used to resolve web URLs.

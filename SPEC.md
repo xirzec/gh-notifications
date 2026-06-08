@@ -17,7 +17,9 @@ gh notifications
 ```
 
 - Shows unread notifications for the authenticated user (`GET /notifications`)
-- Displays a table with columns: `REPOSITORY`, `REASON`, `TITLE`, `AGE`
+- Displays a table with columns: `REPOSITORY`, `TYPE`, `TITLE`, `AGE`
+- `TYPE` is the subject type (`PullRequest` is shown as `PR`)
+- The `REASON` column is hidden by default; pass `--show-reason` to include it
 - `AGE` is a short relative time (`now`, `5m`, `3h`, `2d`) based on the thread's last update
 - Ordered by most recently updated first (API default)
 - Automatically pages through all results (API returns at most 50 per page) so the full list is shown
@@ -44,6 +46,17 @@ gh notifications -f TEXT
 - Keeps only notifications whose title contains `TEXT`, matched case-insensitively
 - Applied after fetching, so it works together with `--repo` and `--interactive`
 - Prints `No unread notifications` when nothing matches
+
+#### Filtering by type
+
+```
+gh notifications --type pr
+gh notifications -t issue
+```
+
+- Keeps only notifications whose subject type matches, e.g. `Issue`, `PullRequest`, `Commit`, `Release`, `Discussion`
+- Accepts friendly aliases (case-insensitive): `pr`/`pull`/`pull-request` → `PullRequest`, `issue` → `Issue`; other values match the API type directly
+- Composable with `--repo`, `--filter`, and `--interactive`
 
 ### Open a Notification in the Browser
 

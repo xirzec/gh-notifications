@@ -33,7 +33,7 @@ func TestRelativeAge(t *testing.T) {
 
 func TestRenderNotificationsEmpty(t *testing.T) {
 	var buf bytes.Buffer
-	if err := renderNotifications(&buf, nil, false, 80); err != nil {
+	if err := renderNotifications(&buf, nil, false, 80, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "No unread notifications") {
@@ -42,23 +42,51 @@ func TestRenderNotificationsEmpty(t *testing.T) {
 }
 
 func TestRenderNotifications(t *testing.T) {
-	var buf bytes.Buffer
 	notifications := []Notification{
 		{
 			Reason:     "mention",
 			UpdatedAt:  time.Now().Add(-2 * time.Hour),
-			Subject:    NotificationSubject{Title: "Fix the bug", Type: "Issue"},
+			Subject:    NotificationSubject{Title: "Fix the bug", Type: "PullRequest"},
 			Repository: NotificationRepo{FullName: "octo/repo"},
 		},
 	}
-	if err := renderNotifications(&buf, notifications, false, 80); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	out := buf.String()
-	for _, want := range []string{"octo/repo", "mention", "Fix the bug"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q; got %q", want, out)
+
+	t.Run("default hides reason, shows type", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := renderNotifications(&buf, notifications, false, 80, false); err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
+		out := buf.String()
+		for _, want := range []string{"octo/repo", "PR", "Fix the bug"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output missing %q; got %q", want, out)
+			}
+		}
+		if strings.Contains(out, "mention") {
+			t.Errorf("expected reason hidden; got %q", out)
+		}
+	})
+
+	t.Run("show-reason includes reason", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := renderNotifications(&buf, notifications, false, 80, true); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+		for _, want := range []string{"octo/repo", "PR", "mention", "Fix the bug"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output missing %q; got %q", want, out)
+			}
+		}
+	})
+}
+
+func TestDisplayType(t *testing.T) {
+	if got := displayType("PullRequest"); got != "PR" {
+		t.Errorf("displayType(PullRequest) = %q, want PR", got)
+	}
+	if got := displayType("Issue"); got != "Issue" {
+		t.Errorf("displayType(Issue) = %q, want Issue", got)
 	}
 }
 
@@ -144,6 +172,77 @@ func TestFilterByTitle(t *testing.T) {
 
 	t.Run("no matches", func(t *testing.T) {
 		if got := filterByTitle(notifications, "nonexistent"); len(got) != 0 {
+			t.Errorf("len = %d, want 0", len(got))
+		}
+	})
+}
+
+func TestParseArgsType(t *testing.T) {
+	for _, arg := range [][]string{{"-t", "pr"}, {"--type", "pr"}, {"--type=pr"}} {
+		opts, err := parseArgs(arg)
+		if err != nil {
+			t.Fatalf("%v: unexpected error: %v", arg, err)
+		}
+		if opts.itemType != "pr" {
+			t.Errorf("%v: itemType = %q, want %q", arg, opts.itemType, "pr")
+		}
+	}
+}
+
+func TestCanonicalType(t *testing.T) {
+	cases := map[string]string{
+		"pr":           "PullRequest",
+		"PR":           "PullRequest",
+		"pull":         "PullRequest",
+		"pull-request": "PullRequest",
+		"issue":        "Issue",
+		"Issues":       "Issue",
+		"commit":       "Commit",
+		"release":      "Release",
+		"discussion":   "Discussion",
+		"CheckSuite":   "CheckSuite",
+	}
+	for in, want := range cases {
+		if got := canonicalType(in); got != want {
+			t.Errorf("canonicalType(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestFilterByType(t *testing.T) {
+	notifications := []Notification{
+		{Subject: NotificationSubject{Title: "A", Type: "Issue"}},
+		{Subject: NotificationSubject{Title: "B", Type: "PullRequest"}},
+		{Subject: NotificationSubject{Title: "C", Type: "PullRequest"}},
+		{Subject: NotificationSubject{Title: "D", Type: "Release"}},
+	}
+
+	t.Run("empty returns all", func(t *testing.T) {
+		if got := filterByType(notifications, ""); len(got) != 4 {
+			t.Errorf("len = %d, want 4", len(got))
+		}
+	})
+
+	t.Run("pr alias", func(t *testing.T) {
+		got := filterByType(notifications, "pr")
+		if len(got) != 2 {
+			t.Fatalf("len = %d, want 2", len(got))
+		}
+		for _, n := range got {
+			if n.Subject.Type != "PullRequest" {
+				t.Errorf("unexpected type %q", n.Subject.Type)
+			}
+		}
+	})
+
+	t.Run("issue", func(t *testing.T) {
+		if got := filterByType(notifications, "issue"); len(got) != 1 {
+			t.Errorf("len = %d, want 1", len(got))
+		}
+	})
+
+	t.Run("no matches", func(t *testing.T) {
+		if got := filterByType(notifications, "commit"); len(got) != 0 {
 			t.Errorf("len = %d, want 0", len(got))
 		}
 	})
