@@ -34,6 +34,17 @@ gh notifications -R OWNER/REPO
 - Repository must be in `OWNER/REPO` format; otherwise the command exits with an error
 - Output and columns are identical to the unfiltered listing
 
+#### Filtering by title
+
+```
+gh notifications --filter TEXT
+gh notifications -f TEXT
+```
+
+- Keeps only notifications whose title contains `TEXT`, matched case-insensitively
+- Applied after fetching, so it works together with `--repo` and `--interactive`
+- Prints `No unread notifications` when nothing matches
+
 ### Open a Notification in the Browser
 
 Interactively pick a notification and open it in the default web browser.

@@ -45,6 +45,9 @@ type NotificationRepo struct {
 type options struct {
 	// repo, when set, limits notifications to a single OWNER/REPO.
 	repo string
+	// filter, when set, keeps only notifications whose title contains it
+	// (case-insensitive).
+	filter string
 	// interactive, when true, prompts the user to pick a notification to
 	// open in a web browser instead of printing the table.
 	interactive bool
@@ -56,6 +59,8 @@ func parseArgs(args []string) (options, error) {
 	var opts options
 	fs.StringVar(&opts.repo, "repo", "", "Filter notifications by repository (OWNER/REPO)")
 	fs.StringVar(&opts.repo, "R", "", "Filter notifications by repository (OWNER/REPO) (shorthand)")
+	fs.StringVar(&opts.filter, "filter", "", "Keep only notifications whose title contains this text (case-insensitive)")
+	fs.StringVar(&opts.filter, "f", "", "Keep only notifications whose title contains this text (case-insensitive) (shorthand)")
 	fs.BoolVar(&opts.interactive, "interactive", false, "Interactively select a notification to open in the browser")
 	fs.BoolVar(&opts.interactive, "i", false, "Interactively select a notification to open in the browser (shorthand)")
 	if err := fs.Parse(args); err != nil {
@@ -68,6 +73,22 @@ func parseArgs(args []string) (options, error) {
 		}
 	}
 	return opts, nil
+}
+
+// filterByTitle returns the notifications whose subject title contains the given
+// text, matched case-insensitively. An empty filter returns the input unchanged.
+func filterByTitle(notifications []Notification, filter string) []Notification {
+	if filter == "" {
+		return notifications
+	}
+	needle := strings.ToLower(filter)
+	filtered := make([]Notification, 0, len(notifications))
+	for _, n := range notifications {
+		if strings.Contains(strings.ToLower(n.Subject.Title), needle) {
+			filtered = append(filtered, n)
+		}
+	}
+	return filtered
 }
 
 // notificationsEndpoint returns the REST endpoint for the given options.
@@ -165,6 +186,8 @@ func runNotifications(opts options) error {
 	if err != nil {
 		return err
 	}
+
+	notifications = filterByTitle(notifications, opts.filter)
 
 	if opts.interactive {
 		return selectAndOpen(client, notifications)

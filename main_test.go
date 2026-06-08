@@ -105,6 +105,50 @@ func TestNotificationsEndpoint(t *testing.T) {
 	}
 }
 
+func TestParseArgsFilter(t *testing.T) {
+	for _, arg := range [][]string{{"-f", "bug"}, {"--filter", "bug"}, {"--filter=bug"}} {
+		opts, err := parseArgs(arg)
+		if err != nil {
+			t.Fatalf("%v: unexpected error: %v", arg, err)
+		}
+		if opts.filter != "bug" {
+			t.Errorf("%v: filter = %q, want %q", arg, opts.filter, "bug")
+		}
+	}
+}
+
+func TestFilterByTitle(t *testing.T) {
+	notifications := []Notification{
+		{Subject: NotificationSubject{Title: "Fix the login bug"}},
+		{Subject: NotificationSubject{Title: "Add dark mode"}},
+		{Subject: NotificationSubject{Title: "Another BUG report"}},
+	}
+
+	t.Run("empty filter returns all", func(t *testing.T) {
+		if got := filterByTitle(notifications, ""); len(got) != 3 {
+			t.Errorf("len = %d, want 3", len(got))
+		}
+	})
+
+	t.Run("case-insensitive substring", func(t *testing.T) {
+		got := filterByTitle(notifications, "bug")
+		if len(got) != 2 {
+			t.Fatalf("len = %d, want 2", len(got))
+		}
+		for _, n := range got {
+			if !strings.Contains(strings.ToLower(n.Subject.Title), "bug") {
+				t.Errorf("unexpected match %q", n.Subject.Title)
+			}
+		}
+	})
+
+	t.Run("no matches", func(t *testing.T) {
+		if got := filterByTitle(notifications, "nonexistent"); len(got) != 0 {
+			t.Errorf("len = %d, want 0", len(got))
+		}
+	})
+}
+
 func TestFindNextPage(t *testing.T) {
 	t.Run("with next link", func(t *testing.T) {
 		resp := &http.Response{Header: http.Header{}}
