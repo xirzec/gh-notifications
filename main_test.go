@@ -248,6 +248,94 @@ func TestFilterByType(t *testing.T) {
 	})
 }
 
+func TestParseArgsState(t *testing.T) {
+	for _, s := range []string{"open", "closed", "merged", "OPEN"} {
+		if _, err := parseArgs([]string{"--state", s}); err != nil {
+			t.Errorf("state %q: unexpected error: %v", s, err)
+		}
+	}
+	if _, err := parseArgs([]string{"--state", "bogus"}); err == nil {
+		t.Error("expected error for invalid state")
+	}
+}
+
+func TestMatchesState(t *testing.T) {
+	cases := []struct {
+		state itemState
+		want  string
+		match bool
+	}{
+		{itemState{State: "open"}, "open", true},
+		{itemState{State: "closed"}, "open", false},
+		{itemState{State: "closed"}, "closed", true},
+		{itemState{State: "closed", Merged: true}, "closed", false},
+		{itemState{State: "closed", Merged: true}, "merged", true},
+		{itemState{State: "open"}, "merged", false},
+		{itemState{State: "open"}, "bogus", false},
+	}
+	for _, c := range cases {
+		if got := matchesState(c.state, c.want); got != c.match {
+			t.Errorf("matchesState(%+v, %q) = %v, want %v", c.state, c.want, got, c.match)
+		}
+	}
+}
+
+func TestFetchItemState(t *testing.T) {
+	n := Notification{Subject: NotificationSubject{URL: "https://api.github.com/repos/o/r/pulls/1"}}
+
+	t.Run("decodes state", func(t *testing.T) {
+		s, ok := fetchItemState(fakeDoer{body: `{"state":"closed","merged":true}`}, n)
+		if !ok || s.State != "closed" || !s.Merged {
+			t.Errorf("got %+v ok=%v", s, ok)
+		}
+	})
+
+	t.Run("no subject url", func(t *testing.T) {
+		if _, ok := fetchItemState(fakeDoer{}, Notification{}); ok {
+			t.Error("expected ok=false without subject url")
+		}
+	})
+
+	t.Run("request error", func(t *testing.T) {
+		if _, ok := fetchItemState(fakeDoer{err: errors.New("boom")}, n); ok {
+			t.Error("expected ok=false on request error")
+		}
+	})
+}
+
+func TestFilterByState(t *testing.T) {
+	notifications := []Notification{
+		{Subject: NotificationSubject{Title: "issue", Type: "Issue", URL: "https://api/1"}},
+		{Subject: NotificationSubject{Title: "pr", Type: "PullRequest", URL: "https://api/2"}},
+		{Subject: NotificationSubject{Title: "release", Type: "Release", URL: "https://api/3"}},
+	}
+
+	t.Run("empty returns all", func(t *testing.T) {
+		if got := filterByState(fakeDoer{}, notifications, ""); len(got) != 3 {
+			t.Errorf("len = %d, want 3", len(got))
+		}
+	})
+
+	t.Run("open keeps issue and pr, drops release", func(t *testing.T) {
+		// fakeDoer returns the same open state for every request.
+		got := filterByState(fakeDoer{body: `{"state":"open"}`}, notifications, "open")
+		if len(got) != 2 {
+			t.Fatalf("len = %d, want 2", len(got))
+		}
+		for _, n := range got {
+			if n.Subject.Type == "Release" {
+				t.Error("release should be excluded by state filter")
+			}
+		}
+	})
+
+	t.Run("closed excludes open items", func(t *testing.T) {
+		if got := filterByState(fakeDoer{body: `{"state":"open"}`}, notifications, "closed"); len(got) != 0 {
+			t.Errorf("len = %d, want 0", len(got))
+		}
+	})
+}
+
 func TestFindNextPage(t *testing.T) {
 	t.Run("with next link", func(t *testing.T) {
 		resp := &http.Response{Header: http.Header{}}

@@ -58,6 +58,18 @@ gh notifications -t issue
 - Accepts friendly aliases (case-insensitive): `pr`/`pull`/`pull-request` → `PullRequest`, `issue` → `Issue`; other values match the API type directly
 - Composable with `--repo`, `--filter`, and `--interactive`
 
+#### Filtering by state
+
+```
+gh notifications --state open
+gh notifications --state merged
+```
+
+- Keeps only issues/PRs in the given state: `open`, `closed`, or `merged`
+- `closed` excludes merged pull requests (those are matched by `merged`)
+- Notifications without an issue/PR state (commits, releases, discussions, etc.) are excluded when this filter is active
+- Requires an extra API request per item to read its state; these run concurrently. Combine with `--repo`/`--filter`/`--type` to reduce the number of lookups
+
 ### Open a Notification in the Browser
 
 Interactively pick a notification and open it in the default web browser.

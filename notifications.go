@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
@@ -51,6 +52,9 @@ type options struct {
 	// itemType, when set, keeps only notifications of a given subject type
 	// (e.g. issue, pr).
 	itemType string
+	// state, when set, keeps only issues/PRs in the given state
+	// (open, closed, or merged). Requires fetching each item.
+	state string
 	// interactive, when true, prompts the user to pick a notification to
 	// open in a web browser instead of printing the table.
 	interactive bool
@@ -68,6 +72,7 @@ func parseArgs(args []string) (options, error) {
 	fs.StringVar(&opts.filter, "f", "", "Keep only notifications whose title contains this text (case-insensitive) (shorthand)")
 	fs.StringVar(&opts.itemType, "type", "", "Keep only notifications of this type (issue, pr, commit, release, discussion, ...)")
 	fs.StringVar(&opts.itemType, "t", "", "Keep only notifications of this type (shorthand)")
+	fs.StringVar(&opts.state, "state", "", "Keep only issues/PRs in this state (open, closed, merged)")
 	fs.BoolVar(&opts.interactive, "interactive", false, "Interactively select a notification to open in the browser")
 	fs.BoolVar(&opts.interactive, "i", false, "Interactively select a notification to open in the browser (shorthand)")
 	fs.BoolVar(&opts.showReason, "show-reason", false, "Include the REASON column in the output")
@@ -78,6 +83,13 @@ func parseArgs(args []string) (options, error) {
 	if opts.repo != "" {
 		if !strings.Contains(strings.Trim(opts.repo, "/"), "/") || strings.Count(opts.repo, "/") != 1 {
 			return options{}, fmt.Errorf("invalid repository %q: expected OWNER/REPO format", opts.repo)
+		}
+	}
+	if opts.state != "" {
+		switch strings.ToLower(opts.state) {
+		case "open", "closed", "merged":
+		default:
+			return options{}, fmt.Errorf("invalid state %q: expected open, closed, or merged", opts.state)
 		}
 	}
 	return opts, nil
@@ -130,6 +142,86 @@ func filterByType(notifications []Notification, itemType string) []Notification 
 	for _, n := range notifications {
 		if strings.EqualFold(n.Subject.Type, want) {
 			filtered = append(filtered, n)
+		}
+	}
+	return filtered
+}
+
+// itemState holds the open/closed/merged status of an issue or pull request.
+type itemState struct {
+	State  string `json:"state"`
+	Merged bool   `json:"merged"`
+}
+
+// matchesState reports whether an item's state satisfies the requested filter.
+// "closed" excludes merged pull requests, which are matched by "merged".
+func matchesState(s itemState, want string) bool {
+	switch strings.ToLower(want) {
+	case "open":
+		return strings.EqualFold(s.State, "open")
+	case "closed":
+		return strings.EqualFold(s.State, "closed") && !s.Merged
+	case "merged":
+		return s.Merged
+	default:
+		return false
+	}
+}
+
+// fetchItemState retrieves the state of a notification's subject (issue or PR).
+func fetchItemState(doer requestDoer, n Notification) (itemState, bool) {
+	if n.Subject.URL == "" {
+		return itemState{}, false
+	}
+	resp, err := doer.Request(http.MethodGet, n.Subject.URL, nil)
+	if err != nil {
+		return itemState{}, false
+	}
+	var s itemState
+	decodeErr := json.NewDecoder(resp.Body).Decode(&s)
+	resp.Body.Close()
+	if decodeErr != nil {
+		return itemState{}, false
+	}
+	return s, true
+}
+
+// stateFetchConcurrency bounds the number of concurrent state lookups.
+const stateFetchConcurrency = 10
+
+// filterByState keeps only issues/PRs whose fetched state matches the requested
+// state. Subjects without a state (commits, releases, etc.) are excluded. An
+// empty state returns the input unchanged. State lookups run concurrently.
+func filterByState(doer requestDoer, notifications []Notification, state string) []Notification {
+	if state == "" {
+		return notifications
+	}
+
+	keep := make([]bool, len(notifications))
+	sem := make(chan struct{}, stateFetchConcurrency)
+	var wg sync.WaitGroup
+
+	for i := range notifications {
+		n := notifications[i]
+		if !strings.EqualFold(n.Subject.Type, "Issue") && !strings.EqualFold(n.Subject.Type, "PullRequest") {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, n Notification) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if s, ok := fetchItemState(doer, n); ok && matchesState(s, state) {
+				keep[idx] = true
+			}
+		}(i, n)
+	}
+	wg.Wait()
+
+	filtered := make([]Notification, 0, len(notifications))
+	for i, k := range keep {
+		if k {
+			filtered = append(filtered, notifications[i])
 		}
 	}
 	return filtered
@@ -252,6 +344,7 @@ func runNotifications(opts options) error {
 
 	notifications = filterByTitle(notifications, opts.filter)
 	notifications = filterByType(notifications, opts.itemType)
+	notifications = filterByState(client, notifications, opts.state)
 
 	if opts.interactive {
 		return selectAndOpen(client, notifications)
