@@ -64,6 +64,8 @@ func markCmd(doer requestDoer, n Notification, action string) tea.Cmd {
 type pickerModel struct {
 	list           list.Model
 	doer           requestDoer
+	all            []Notification // source of truth, independent of any focus
+	focusRepo      string         // when set, the list is scoped to this OWNER/REPO
 	width          int
 	height         int
 	confirming     bool
@@ -71,17 +73,57 @@ type pickerModel struct {
 	confirmAction  string
 }
 
+// pickerHint is the keybinding summary shown in the list title.
+const pickerHint = "enter open · r/d/u act · R/D/U all · f focus repo · esc back · q quit"
+
 func newPickerModel(doer requestDoer, notifications []Notification) pickerModel {
-	items := make([]list.Item, len(notifications))
-	for i, n := range notifications {
-		items[i] = notificationItem{n: n}
+	m := pickerModel{doer: doer, all: notifications}
+	m.list = list.New(m.itemsForFocus(), list.NewDefaultDelegate(), 0, 0)
+	m.list.SetStatusBarItemName("notification", "notifications")
+	m.updateTitle()
+	return m
+}
+
+// itemsForFocus returns the list items for the current focus: every notification
+// when unfocused, or only those in the focused repository.
+func (m pickerModel) itemsForFocus() []list.Item {
+	out := make([]list.Item, 0, len(m.all))
+	for _, n := range m.all {
+		if m.focusRepo == "" || n.Repository.FullName == m.focusRepo {
+			out = append(out, notificationItem{n: n})
+		}
 	}
+	return out
+}
 
-	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
-	l.Title = "Notifications  (enter: open · r/d/u: read/done/unsub · R/D/U: all visible · q: quit)"
-	l.SetStatusBarItemName("notification", "notifications")
+// updateTitle sets the list title to reflect the current focus.
+func (m *pickerModel) updateTitle() {
+	if m.focusRepo != "" {
+		m.list.Title = m.focusRepo + "  (" + pickerHint + ")"
+	} else {
+		m.list.Title = "Notifications  (" + pickerHint + ")"
+	}
+}
 
-	return pickerModel{list: l, doer: doer}
+// applyFocus rebuilds the visible items from the current focus, resetting any
+// text filter and the selection.
+func (m *pickerModel) applyFocus() tea.Cmd {
+	m.list.ResetFilter()
+	cmd := m.list.SetItems(m.itemsForFocus())
+	m.list.ResetSelected()
+	m.updateTitle()
+	return cmd
+}
+
+// removeFromAll drops the notification with the given ID from the source of
+// truth so it does not reappear when the focus changes.
+func (m *pickerModel) removeFromAll(id string) {
+	for i, n := range m.all {
+		if n.ID == id {
+			m.all = append(m.all[:i], m.all[i+1:]...)
+			return
+		}
+	}
 }
 
 func (m pickerModel) Init() tea.Cmd { return nil }
@@ -115,6 +157,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			return m, m.list.NewStatusMessage("Error: " + msg.err.Error())
 		}
+		m.removeFromAll(msg.id)
 		for i, it := range m.list.Items() {
 			if ni, ok := it.(notificationItem); ok && ni.n.ID == msg.id {
 				m.list.RemoveItem(i)
@@ -154,6 +197,18 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "q":
 				return m, tea.Quit
+			case "esc":
+				// Pop back out of a repository focus, unless a text filter is
+				// applied (in which case the list handles esc to clear it).
+				if m.focusRepo != "" && m.list.FilterState() == list.Unfiltered {
+					m.focusRepo = ""
+					return m, m.applyFocus()
+				}
+			case "f":
+				if it, ok := m.list.SelectedItem().(notificationItem); ok {
+					m.focusRepo = it.n.Repository.FullName
+					return m, m.applyFocus()
+				}
 			case "enter":
 				if it, ok := m.list.SelectedItem().(notificationItem); ok {
 					return m, tea.Batch(

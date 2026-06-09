@@ -220,6 +220,75 @@ func drainCmd(cmd tea.Cmd) {
 	}
 }
 
+func TestPickerFocusRepo(t *testing.T) {
+	notifications := []Notification{
+		{ID: "1", Subject: NotificationSubject{Title: "A"}, Repository: NotificationRepo{FullName: "a/x"}},
+		{ID: "2", Subject: NotificationSubject{Title: "B"}, Repository: NotificationRepo{FullName: "a/x"}},
+		{ID: "3", Subject: NotificationSubject{Title: "C"}, Repository: NotificationRepo{FullName: "b/y"}},
+	}
+
+	t.Run("f focuses selected repo", func(t *testing.T) {
+		m := newTestPicker(t, notifications, &recordingDoer{})
+		// Selected item is index 0 (repo a/x).
+		updated, _ := m.Update(runeKey('f'))
+		m = updated.(pickerModel)
+		if m.focusRepo != "a/x" {
+			t.Fatalf("focusRepo = %q, want a/x", m.focusRepo)
+		}
+		if got := len(m.list.VisibleItems()); got != 2 {
+			t.Errorf("visible = %d, want 2", got)
+		}
+	})
+
+	t.Run("esc clears focus", func(t *testing.T) {
+		m := newTestPicker(t, notifications, &recordingDoer{})
+		updated, _ := m.Update(runeKey('f'))
+		m = updated.(pickerModel)
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		m = updated.(pickerModel)
+		if m.focusRepo != "" {
+			t.Errorf("focusRepo = %q, want empty", m.focusRepo)
+		}
+		if got := len(m.list.VisibleItems()); got != 3 {
+			t.Errorf("visible = %d, want 3", got)
+		}
+	})
+
+	t.Run("bulk action while focused targets only that repo", func(t *testing.T) {
+		m := newTestPicker(t, notifications, &recordingDoer{})
+		updated, _ := m.Update(runeKey('f'))
+		m = updated.(pickerModel)
+		updated, _ = m.Update(runeKey('D'))
+		m = updated.(pickerModel)
+		if !m.confirming {
+			t.Fatal("expected confirming")
+		}
+		if len(m.confirmTargets) != 2 {
+			t.Errorf("targets = %d, want 2 (only focused repo)", len(m.confirmTargets))
+		}
+		for _, n := range m.confirmTargets {
+			if n.Repository.FullName != "a/x" {
+				t.Errorf("unexpected target repo %q", n.Repository.FullName)
+			}
+		}
+	})
+}
+
+func TestPickerMarkedMsgRemovesFromSourceOfTruth(t *testing.T) {
+	notifications := []Notification{
+		{ID: "1", Subject: NotificationSubject{Title: "A"}, Repository: NotificationRepo{FullName: "a/x"}},
+		{ID: "2", Subject: NotificationSubject{Title: "B"}, Repository: NotificationRepo{FullName: "b/y"}},
+	}
+	m := newTestPicker(t, notifications, &recordingDoer{})
+
+	updated, _ := m.Update(markedMsg{id: "1", title: "A"})
+	m = updated.(pickerModel)
+
+	if len(m.all) != 1 || m.all[0].ID != "2" {
+		t.Errorf("all = %v, want only ID 2", m.all)
+	}
+}
+
 func TestPickerMarkedMsgRemovesItem(t *testing.T) {
 	notifications := []Notification{
 		{ID: "1", Subject: NotificationSubject{Title: "A"}, Repository: NotificationRepo{FullName: "o/r"}},
