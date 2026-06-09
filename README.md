@@ -139,5 +139,4 @@ features.
 
 ## License
 
-No license has been specified yet. Until one is added, the default copyright terms apply and the
-code is not licensed for reuse.
+[MIT](LICENSE) © xirzec
