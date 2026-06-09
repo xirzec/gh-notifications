@@ -62,13 +62,13 @@ func markCmd(doer requestDoer, n Notification, action string) tea.Cmd {
 
 // pickerModel is the Bubble Tea model backing the interactive notification list.
 type pickerModel struct {
-	list          list.Model
-	doer          requestDoer
-	width         int
-	height        int
-	confirming    bool
-	confirmTarget Notification
-	confirmAction string
+	list           list.Model
+	doer           requestDoer
+	width          int
+	height         int
+	confirming     bool
+	confirmTargets []Notification
+	confirmAction  string
 }
 
 func newPickerModel(doer requestDoer, notifications []Notification) pickerModel {
@@ -78,7 +78,7 @@ func newPickerModel(doer requestDoer, notifications []Notification) pickerModel 
 	}
 
 	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
-	l.Title = "Notifications  (enter: open · r: read · d: done · u: unsubscribe · q: quit)"
+	l.Title = "Notifications  (enter: open · r/d/u: read/done/unsub · R/D/U: all visible · q: quit)"
 	l.SetStatusBarItemName("notification", "notifications")
 
 	return pickerModel{list: l, doer: doer}
@@ -132,15 +132,18 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// While a confirmation is pending, capture y/n and nothing else.
 		if m.confirming {
 			action := m.confirmAction
-			target := m.confirmTarget
+			targets := m.confirmTargets
 			m.confirming = false
+			m.confirmTargets = nil
 			m.resizeList()
 			switch msg.String() {
 			case "y", "Y":
-				return m, tea.Batch(
-					m.list.NewStatusMessage("Working…"),
-					markCmd(m.doer, target, action),
-				)
+				cmds := make([]tea.Cmd, 0, len(targets)+1)
+				cmds = append(cmds, m.list.NewStatusMessage("Working…"))
+				for _, t := range targets {
+					cmds = append(cmds, markCmd(m.doer, t, action))
+				}
+				return m, tea.Batch(cmds...)
 			default:
 				return m, m.list.NewStatusMessage("Cancelled")
 			}
@@ -158,20 +161,21 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						openCmd(m.doer, it.n),
 					)
 				}
-			case "r", "d", "u":
-				if it, ok := m.list.SelectedItem().(notificationItem); ok {
-					m.confirming = true
-					m.confirmTarget = it.n
-					switch msg.String() {
-					case "d":
-						m.confirmAction = "done"
-					case "u":
-						m.confirmAction = "unsubscribe"
-					default:
-						m.confirmAction = "read"
+			default:
+				if action, bulk, ok := actionForKey(msg.String()); ok {
+					var targets []Notification
+					if bulk {
+						targets = visibleNotifications(m.list)
+					} else if it, ok := m.list.SelectedItem().(notificationItem); ok {
+						targets = []Notification{it.n}
 					}
-					m.resizeList()
-					return m, nil
+					if len(targets) > 0 {
+						m.confirming = true
+						m.confirmTargets = targets
+						m.confirmAction = action
+						m.resizeList()
+						return m, nil
+					}
 				}
 			}
 		}
@@ -182,10 +186,51 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// actionForKey maps a key to a thread action and whether it applies to all
+// visible items (bulk). Lowercase keys act on the selected item; uppercase keys
+// act on every visible (filtered) item.
+func actionForKey(key string) (action string, bulk bool, ok bool) {
+	switch key {
+	case "r":
+		return "read", false, true
+	case "d":
+		return "done", false, true
+	case "u":
+		return "unsubscribe", false, true
+	case "R":
+		return "read", true, true
+	case "D":
+		return "done", true, true
+	case "U":
+		return "unsubscribe", true, true
+	default:
+		return "", false, false
+	}
+}
+
+// visibleNotifications returns the notifications currently visible in the list,
+// reflecting any active filter.
+func visibleNotifications(l list.Model) []Notification {
+	items := l.VisibleItems()
+	out := make([]Notification, 0, len(items))
+	for _, it := range items {
+		if ni, ok := it.(notificationItem); ok {
+			out = append(out, ni.n)
+		}
+	}
+	return out
+}
+
 func (m pickerModel) View() string {
 	v := m.list.View()
 	if m.confirming {
-		v += "\n\n" + fmt.Sprintf(threadActions[m.confirmAction].prompt, m.confirmTarget.Subject.Title) + " (y/N) "
+		var prompt string
+		if len(m.confirmTargets) == 1 {
+			prompt = fmt.Sprintf(threadActions[m.confirmAction].prompt, m.confirmTargets[0].Subject.Title)
+		} else {
+			prompt = fmt.Sprintf(threadActions[m.confirmAction].confirm, len(m.confirmTargets))
+		}
+		v += "\n\n" + prompt + " (y/N) "
 	}
 	return v
 }

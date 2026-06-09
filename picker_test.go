@@ -78,8 +78,8 @@ func TestPickerMarkReadConfirmAndCancel(t *testing.T) {
 		if !m.confirming {
 			t.Fatal("expected confirming state")
 		}
-		if m.confirmTarget.ID != "1" {
-			t.Errorf("confirmTarget = %q", m.confirmTarget.ID)
+		if len(m.confirmTargets) != 1 || m.confirmTargets[0].ID != "1" {
+			t.Errorf("confirmTargets = %v", m.confirmTargets)
 		}
 		if m.confirmAction != "read" {
 			t.Errorf("confirmAction = %q, want read", m.confirmAction)
@@ -134,6 +134,90 @@ func TestPickerMarkReadConfirmAndCancel(t *testing.T) {
 			t.Error("expected a command to be issued")
 		}
 	})
+}
+
+func TestActionForKey(t *testing.T) {
+	cases := []struct {
+		key    string
+		action string
+		bulk   bool
+		ok     bool
+	}{
+		{"r", "read", false, true},
+		{"d", "done", false, true},
+		{"u", "unsubscribe", false, true},
+		{"R", "read", true, true},
+		{"D", "done", true, true},
+		{"U", "unsubscribe", true, true},
+		{"x", "", false, false},
+	}
+	for _, c := range cases {
+		action, bulk, ok := actionForKey(c.key)
+		if action != c.action || bulk != c.bulk || ok != c.ok {
+			t.Errorf("actionForKey(%q) = (%q,%v,%v), want (%q,%v,%v)", c.key, action, bulk, ok, c.action, c.bulk, c.ok)
+		}
+	}
+}
+
+func TestPickerBulkActionTargetsAllVisible(t *testing.T) {
+	notifications := []Notification{
+		{ID: "1", Subject: NotificationSubject{Title: "A"}, Repository: NotificationRepo{FullName: "o/r"}},
+		{ID: "2", Subject: NotificationSubject{Title: "B"}, Repository: NotificationRepo{FullName: "o/r"}},
+		{ID: "3", Subject: NotificationSubject{Title: "C"}, Repository: NotificationRepo{FullName: "o/r"}},
+	}
+	m := newTestPicker(t, notifications, &recordingDoer{})
+
+	// Shift+D => bulk mark done on all visible items.
+	updated, _ := m.Update(runeKey('D'))
+	m = updated.(pickerModel)
+	if !m.confirming {
+		t.Fatal("expected confirming state")
+	}
+	if m.confirmAction != "done" {
+		t.Errorf("confirmAction = %q, want done", m.confirmAction)
+	}
+	if len(m.confirmTargets) != 3 {
+		t.Fatalf("expected 3 targets, got %d", len(m.confirmTargets))
+	}
+}
+
+func TestPickerBulkConfirmIssuesAllCommands(t *testing.T) {
+	doer := &recordingDoer{}
+	notifications := []Notification{
+		{ID: "1", Subject: NotificationSubject{Title: "A"}, Repository: NotificationRepo{FullName: "o/r"}},
+		{ID: "2", Subject: NotificationSubject{Title: "B"}, Repository: NotificationRepo{FullName: "o/r"}},
+	}
+	m := newTestPicker(t, notifications, doer)
+
+	updated, _ := m.Update(runeKey('D'))
+	m = updated.(pickerModel)
+	updated, cmd := m.Update(runeKey('y'))
+	m = updated.(pickerModel)
+	if m.confirming {
+		t.Error("expected confirming cleared after y")
+	}
+	if cmd == nil {
+		t.Fatal("expected commands to be issued")
+	}
+	// Execute the batch to trigger the underlying mark commands.
+	drainCmd(cmd)
+	if len(doer.calls) != 2 {
+		t.Errorf("expected 2 mark calls, got %v", doer.calls)
+	}
+}
+
+// drainCmd recursively executes a tea.Cmd (including batches) so the side
+// effects of the underlying commands run.
+func drainCmd(cmd tea.Cmd) {
+	if cmd == nil {
+		return
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			drainCmd(c)
+		}
+	}
 }
 
 func TestPickerMarkedMsgRemovesItem(t *testing.T) {

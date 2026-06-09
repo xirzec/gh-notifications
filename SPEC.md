@@ -126,6 +126,7 @@ gh notifications -i
 - Press `r` to mark the highlighted notification as read; an in-list `y/N` confirmation is shown first, and on success the entry is removed from the list
 - Press `d` to mark the highlighted notification as done (removing it from the inbox); same `y/N` confirmation and removal behavior
 - Press `u` to unsubscribe from the highlighted notification thread (also marks it done); same `y/N` confirmation and removal behavior
+- Bulk actions apply to **all currently visible items** (respecting an active `/` filter): `R` (read), `D` (done), `U` (unsubscribe). A single `y/N` confirmation shows the count, and each successfully processed item is removed from the list
 - After opening a notification, returns to the list so several can be opened in one session
 - Exit with `q` or `Ctrl+C`
 - Opens the selected thread's web page, resolved from the subject's `html_url`
