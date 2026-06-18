@@ -190,6 +190,25 @@ go test -run TestName ./...   # run a single test
 Line endings are normalized to LF via `.gitattributes`. Run `make fmt` before committing —
 `make lint` fails if anything is not gofmt-clean.
 
+### Building on Windows
+
+The build commands use [GNU Make](https://www.gnu.org/software/make/). Install it with:
+
+```powershell
+winget install GnuWin32.Make
+```
+
+GnuWin32 does **not** update your `PATH` automatically — add its `bin` directory so `make` is
+found:
+
+```
+C:\Program Files (x86)\GnuWin32\bin\
+```
+
+(Add it via *System Properties → Environment Variables*, or for the current session:
+`$env:PATH += ';C:\Program Files (x86)\GnuWin32\bin\'`.) Then `make build`, `make test`, etc. work
+in PowerShell as shown above.
+
 `SPEC.md` is the source of truth for intended behavior — consult and update it when changing
 features.
 
