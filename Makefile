@@ -12,12 +12,8 @@ fmt:
 	gofmt -w .
 
 lint:
-	@if [ -n "$$(gofmt -l .)" ]; then \
-		echo "The following files need gofmt (run 'make fmt'):"; \
-		gofmt -l .; \
-		exit 1; \
-	fi
 	go vet ./...
+	go test -count=1 -run TestSourceFormatted ./...
 
 clean:
 	rm -f $(BINARY) $(BINARY).exe $(BINARY).exe~

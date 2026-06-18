@@ -10,7 +10,7 @@ This is a GitHub CLI (`gh`) extension written in Go. It extends the `gh` command
 make build        # compile the binary
 make test         # run all tests (go test ./...)
 make fmt          # format the code (gofmt -w .)
-make lint         # check formatting (gofmt -l .) and vet the code (go vet ./...)
+make lint         # check formatting (TestSourceFormatted) and vet the code (go vet ./...)
 go test -run TestName ./...  # run a single test
 gh notifications  # run as an installed gh extension
 ```
@@ -99,3 +99,5 @@ uppercase = all visible). Every mutating command must support `--dry-run` and an
 - Mutation tests assert that `--dry-run` and aborted confirmations make **zero** API calls
 - Test the Bubble Tea model by feeding `tea.Msg` values into `Update` and inspecting model state;
   use `drainCmd` to execute batched `tea.Cmd`s when verifying their side effects
+- `TestSourceFormatted` (`format_test.go`) shells out to `gofmt -l` and fails on any unformatted
+  file, so formatting is enforced portably by `make test`/`make lint` on any OS
