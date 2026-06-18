@@ -54,7 +54,7 @@ The table columns are `REPOSITORY`, `TYPE`, `TITLE`, and `AGE` (a short relative
 | `-R`, `--repo OWNER/REPO` | Limit to a single repository |
 | `-f`, `--filter TEXT` | Keep only notifications whose title contains `TEXT` (case-insensitive) |
 | `-t`, `--type TYPE` | Keep only a subject type: `issue`, `pr`, `commit`, `release`, `discussion`, … (friendly aliases accepted) |
-| `--state STATE` | Keep only issues/PRs in a state: `open`, `closed`, `merged`, `not-planned`, `completed` |
+| `--state STATE` | Keep only issues/PRs in a state: `open`, `closed`, `merged`, `not-planned`, `completed`. `closed` and `merged` are distinct: `closed` excludes merged PRs — use `merged` for those |
 | `--draft` | Keep only draft pull requests |
 | `--show-reason` | Include the `REASON` column in the table |
 | `-i`, `--interactive` | Open the interactive picker (see below) |
@@ -79,6 +79,9 @@ gh notifications --draft
 
 # Issues that were closed as "not planned"
 gh notifications --type issue --state not-planned
+
+# Closed PRs that were NOT merged (merged PRs are excluded by --state closed)
+gh notifications --type pr --state closed
 
 # Preview what marking merged PRs as done would do (no changes made)
 gh notifications --type pr --state merged --mark-done --dry-run

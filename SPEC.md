@@ -96,7 +96,8 @@ gh notifications --state not-planned
 ```
 
 - Keeps only issues/PRs in the given state: `open`, `closed`, `merged`, `not-planned`, or `completed`
-- `closed` matches any closed item; `not-planned` and `completed` further require the issue's close reason (`stateReason`), so they only match closed issues
+- `merged` and `closed` are **distinct, non-overlapping** states: a merged pull request reports its state as `merged`, not `closed`. This means `--state closed` matches only closed-unmerged items (closed issues and closed-without-merging PRs) and **does not include merged PRs** — use `--state merged` for those. This differs from the REST `state` field and parts of GitHub's UI, which treat merged as a kind of closed; the split is intentional so the two can be filtered separately.
+- `not-planned` and `completed` further require the issue's close reason (`stateReason`), so they only match closed issues
 - Notifications without an issue/PR state (commits, releases, discussions, etc.) are excluded when this filter is active
 - States are fetched with batched GraphQL queries (up to 50 items per request) rather than one REST call per item, keeping the lookup fast and rate-limit friendly
 

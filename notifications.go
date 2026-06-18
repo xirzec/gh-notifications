@@ -91,7 +91,7 @@ func parseArgs(args []string) (options, error) {
 	fs.StringVar(&opts.filter, "f", "", "Keep only notifications whose title contains this text (case-insensitive) (shorthand)")
 	fs.StringVar(&opts.itemType, "type", "", "Keep only notifications of this type (issue, pr, commit, release, discussion, ...)")
 	fs.StringVar(&opts.itemType, "t", "", "Keep only notifications of this type (shorthand)")
-	fs.StringVar(&opts.state, "state", "", "Keep only issues/PRs in this state (open, closed, merged)")
+	fs.StringVar(&opts.state, "state", "", "Keep only issues/PRs in this state (open, closed, merged); closed excludes merged PRs")
 	fs.BoolVar(&opts.draft, "draft", false, "Keep only draft pull requests")
 	fs.BoolVar(&opts.interactive, "interactive", false, "Interactively select a notification to open in the browser")
 	fs.BoolVar(&opts.interactive, "i", false, "Interactively select a notification to open in the browser (shorthand)")
