@@ -395,4 +395,3 @@ func TestPickerSingleActionDoesNotEnterBulk(t *testing.T) {
 		t.Errorf("single action should not start bulk tracking, got remaining %d", m.bulkRemaining)
 	}
 }
-

@@ -15,13 +15,13 @@ import (
 // mutating action and free-form tags. It is the on-disk representation of a
 // reusable query.
 type savedQuery struct {
-	Name   string   `yaml:"name"`
-	Repo   string   `yaml:"repo,omitempty"`
-	Filter string   `yaml:"filter,omitempty"`
-	Type   string   `yaml:"type,omitempty"`
-	State  string   `yaml:"state,omitempty"`
-	Draft  bool     `yaml:"draft,omitempty"`
-	All    bool     `yaml:"all,omitempty"`
+	Name   string `yaml:"name"`
+	Repo   string `yaml:"repo,omitempty"`
+	Filter string `yaml:"filter,omitempty"`
+	Type   string `yaml:"type,omitempty"`
+	State  string `yaml:"state,omitempty"`
+	Draft  bool   `yaml:"draft,omitempty"`
+	All    bool   `yaml:"all,omitempty"`
 	// Action, when set, is one of "read", "done", or "unsubscribe".
 	Action string   `yaml:"action,omitempty"`
 	Tags   []string `yaml:"tags,omitempty"`

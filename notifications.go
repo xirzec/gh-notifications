@@ -25,12 +25,12 @@ var linkRE = regexp.MustCompile(`<([^>]+)>;\s*rel="([^"]+)"`)
 // Notification represents a single GitHub notification thread.
 // See https://docs.github.com/en/rest/activity/notifications
 type Notification struct {
-	ID         string             `json:"id"`
-	Reason     string             `json:"reason"`
-	Unread     bool               `json:"unread"`
-	UpdatedAt  time.Time          `json:"updated_at"`
+	ID         string              `json:"id"`
+	Reason     string              `json:"reason"`
+	Unread     bool                `json:"unread"`
+	UpdatedAt  time.Time           `json:"updated_at"`
 	Subject    NotificationSubject `json:"subject"`
-	Repository NotificationRepo   `json:"repository"`
+	Repository NotificationRepo    `json:"repository"`
 }
 
 type NotificationSubject struct {
