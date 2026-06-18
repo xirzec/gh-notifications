@@ -1,0 +1,15 @@
+{
+  "lspServers": {
+    "gopls": {
+      "command": "gopls",
+      "args": [],
+      "fileExtensions": {
+        ".go": "go",
+        "go.mod": "go.mod",
+        "go.sum": "go.sum",
+        ".tmpl": "gotmpl",
+        ".gotmpl": "gotmpl"
+      }
+    }
+  }
+}
