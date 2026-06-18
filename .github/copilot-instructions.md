@@ -9,10 +9,13 @@ This is a GitHub CLI (`gh`) extension written in Go. It extends the `gh` command
 ```bash
 make build        # compile the binary
 make test         # run all tests (go test ./...)
-make lint         # vet the code (go vet ./...)
+make fmt          # format the code (gofmt -w .)
+make lint         # check formatting (gofmt -l .) and vet the code (go vet ./...)
 go test -run TestName ./...  # run a single test
 gh notifications  # run as an installed gh extension
 ```
+
+Run `make fmt` before committing — `make lint` fails if any file is not gofmt-clean.
 
 ## Spec
 
@@ -59,6 +62,8 @@ accidentally destroying notification state, follow these rules:
   validation also lives there
 - All REST calls flow through the `rateLimitTracker` (a `requestDoer` wrapper) so the quota is
   captured; pass it, not the raw client, into fetch/mutate/picker code
+- Line endings are normalized to LF via `.gitattributes` (`* text=auto eol=lf`); keep all files
+  LF. Code must be gofmt-clean — run `make fmt` (or `gofmt -w .`) before committing
 
 ### Filtering pipeline
 

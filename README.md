@@ -182,9 +182,13 @@ The browser is chosen via `GH_BROWSER`, your `gh` config, or `BROWSER`.
 ```bash
 make build        # compile the binary
 make test         # run all tests
-make lint         # go vet
+make fmt          # format the code (gofmt -w .)
+make lint         # check formatting + go vet
 go test -run TestName ./...   # run a single test
 ```
+
+Line endings are normalized to LF via `.gitattributes`. Run `make fmt` before committing —
+`make lint` fails if anything is not gofmt-clean.
 
 `SPEC.md` is the source of truth for intended behavior — consult and update it when changing
 features.
