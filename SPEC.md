@@ -128,6 +128,7 @@ gh notifications -i
 - Press `d` to mark the highlighted notification as done (removing it from the inbox); same `y/N` confirmation and removal behavior
 - Press `u` to unsubscribe from the highlighted notification thread (also marks it done); same `y/N` confirmation and removal behavior
 - Bulk actions apply to **all currently visible items** (respecting an active `/` filter): `R` (read), `D` (done), `U` (unsubscribe). A single `y/N` confirmation shows the count, and each successfully processed item is removed from the list
+- Bulk actions report a single aggregate status once every item has been processed, e.g. `Marked 8/10 as done (2 failed)`. Successful items are removed from the list while failed ones remain, so the leftover list is exactly the set that still needs attention and can be retried. (Single-item `r`/`d`/`u` actions still report per item.)
 - Press `f` to focus the list on the selected item's repository — the list is scoped to just that `OWNER/REPO`, the title shows the repo, and bulk actions then apply only within it. Press `esc` to clear the focus and return to all notifications. This lets you start from everything, drill into one repo to open/triage/bulk-action it, then pop back to the others
 - After opening a notification, returns to the list so several can be opened in one session
 - Exit with `q` or `Ctrl+C`

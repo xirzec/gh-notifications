@@ -71,6 +71,26 @@ type pickerModel struct {
 	confirming     bool
 	confirmTargets []Notification
 	confirmAction  string
+
+	// bulk tracks the aggregate progress of an in-flight bulk (R/D/U) action so
+	// a single summary can be shown once every per-item result has arrived,
+	// instead of the per-item messages clobbering each other. Active only while
+	// bulkRemaining > 0; single-item actions never set it.
+	bulkRemaining int
+	bulkTotal     int
+	bulkSucceeded int
+	bulkFailed    int
+	bulkAction    string
+}
+
+// bulkSummary describes the outcome of the just-finished bulk action, e.g.
+// "Marked 8/10 as done (2 failed)".
+func (m pickerModel) bulkSummary() string {
+	past := threadActions[m.bulkAction].past
+	if m.bulkFailed == 0 {
+		return fmt.Sprintf("Marked %d/%d as %s", m.bulkSucceeded, m.bulkTotal, past)
+	}
+	return fmt.Sprintf("Marked %d/%d as %s (%d failed)", m.bulkSucceeded, m.bulkTotal, past, m.bulkFailed)
 }
 
 // pickerHint is the keybinding summary shown in the list title.
@@ -154,15 +174,36 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.list.NewStatusMessage("Opened " + msg.url)
 
 	case markedMsg:
+		// Successful marks are removed from the list and the source of truth;
+		// failed ones stay so the remaining list reflects what still needs
+		// attention.
+		if msg.err == nil {
+			m.removeFromAll(msg.id)
+			for i, it := range m.list.Items() {
+				if ni, ok := it.(notificationItem); ok && ni.n.ID == msg.id {
+					m.list.RemoveItem(i)
+					break
+				}
+			}
+		}
+
+		// Part of a bulk action: accumulate outcomes and report a single
+		// summary only once every per-item result has arrived.
+		if m.bulkRemaining > 0 {
+			if msg.err != nil {
+				m.bulkFailed++
+			} else {
+				m.bulkSucceeded++
+			}
+			m.bulkRemaining--
+			if m.bulkRemaining > 0 {
+				return m, nil
+			}
+			return m, m.list.NewStatusMessage(m.bulkSummary())
+		}
+
 		if msg.err != nil {
 			return m, m.list.NewStatusMessage("Error: " + msg.err.Error())
-		}
-		m.removeFromAll(msg.id)
-		for i, it := range m.list.Items() {
-			if ni, ok := it.(notificationItem); ok && ni.n.ID == msg.id {
-				m.list.RemoveItem(i)
-				break
-			}
 		}
 		return m, m.list.NewStatusMessage(threadActions[msg.action].past + ": " + msg.title)
 
@@ -183,6 +224,16 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "y", "Y":
 				cmds := make([]tea.Cmd, 0, len(targets)+1)
 				cmds = append(cmds, m.list.NewStatusMessage("Working…"))
+				// Track aggregate progress for true bulk actions so partial
+				// failures surface in one summary; single-item actions report
+				// per item as before.
+				if len(targets) > 1 {
+					m.bulkRemaining = len(targets)
+					m.bulkTotal = len(targets)
+					m.bulkSucceeded = 0
+					m.bulkFailed = 0
+					m.bulkAction = action
+				}
 				for _, t := range targets {
 					cmds = append(cmds, markCmd(m.doer, t, action))
 				}

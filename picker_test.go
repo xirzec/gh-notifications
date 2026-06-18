@@ -308,16 +308,91 @@ func TestPickerMarkedMsgRemovesItem(t *testing.T) {
 	}
 }
 
-func TestPickerMarkedMsgErrorKeepsItems(t *testing.T) {
+func TestBulkSummary(t *testing.T) {
+	t.Run("all succeeded", func(t *testing.T) {
+		m := pickerModel{bulkAction: "done", bulkTotal: 10, bulkSucceeded: 10, bulkFailed: 0}
+		if got, want := m.bulkSummary(), "Marked 10/10 as done"; got != want {
+			t.Errorf("bulkSummary() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("partial failure", func(t *testing.T) {
+		m := pickerModel{bulkAction: "done", bulkTotal: 10, bulkSucceeded: 8, bulkFailed: 2}
+		if got, want := m.bulkSummary(), "Marked 8/10 as done (2 failed)"; got != want {
+			t.Errorf("bulkSummary() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("read action phrasing", func(t *testing.T) {
+		m := pickerModel{bulkAction: "read", bulkTotal: 3, bulkSucceeded: 2, bulkFailed: 1}
+		if got, want := m.bulkSummary(), "Marked 2/3 as read (1 failed)"; got != want {
+			t.Errorf("bulkSummary() = %q, want %q", got, want)
+		}
+	})
+}
+
+func TestPickerBulkAggregatesPartialFailure(t *testing.T) {
 	notifications := []Notification{
 		{ID: "1", Subject: NotificationSubject{Title: "A"}, Repository: NotificationRepo{FullName: "o/r"}},
+		{ID: "2", Subject: NotificationSubject{Title: "B"}, Repository: NotificationRepo{FullName: "o/r"}},
+		{ID: "3", Subject: NotificationSubject{Title: "C"}, Repository: NotificationRepo{FullName: "o/r"}},
 	}
 	m := newTestPicker(t, notifications, &recordingDoer{})
 
-	updated, _ := m.Update(markedMsg{id: "1", title: "A", err: errors.New("boom")})
+	// Shift+D then confirm => bulk done on all three visible items.
+	updated, _ := m.Update(runeKey('D'))
+	m = updated.(pickerModel)
+	updated, _ = m.Update(runeKey('y'))
+	m = updated.(pickerModel)
+	if m.bulkRemaining != 3 || m.bulkTotal != 3 || m.bulkAction != "done" {
+		t.Fatalf("bulk state = remaining %d total %d action %q", m.bulkRemaining, m.bulkTotal, m.bulkAction)
+	}
+
+	// Two succeed, one fails.
+	updated, _ = m.Update(markedMsg{id: "1", title: "A", action: "done"})
+	m = updated.(pickerModel)
+	updated, _ = m.Update(markedMsg{id: "2", title: "B", action: "done", err: errors.New("boom")})
+	m = updated.(pickerModel)
+	updated, cmd := m.Update(markedMsg{id: "3", title: "C", action: "done"})
 	m = updated.(pickerModel)
 
-	if len(m.list.Items()) != 1 {
-		t.Errorf("expected item retained on error, got %d", len(m.list.Items()))
+	if m.bulkRemaining != 0 {
+		t.Errorf("bulkRemaining = %d, want 0", m.bulkRemaining)
+	}
+	if m.bulkSucceeded != 2 || m.bulkFailed != 1 {
+		t.Errorf("succeeded = %d, failed = %d; want 2 and 1", m.bulkSucceeded, m.bulkFailed)
+	}
+	if got, want := m.bulkSummary(), "Marked 2/3 as done (1 failed)"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if cmd == nil {
+		t.Error("expected a status-message command after the final result")
+	}
+
+	// The failed item (ID 2) remains; the successful ones are gone.
+	items := m.list.Items()
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item retained, got %d", len(items))
+	}
+	if ni, ok := items[0].(notificationItem); !ok || ni.n.ID != "2" {
+		t.Errorf("remaining item = %+v, want failed ID 2", items[0])
 	}
 }
+
+func TestPickerSingleActionDoesNotEnterBulk(t *testing.T) {
+	notifications := []Notification{
+		{ID: "1", Subject: NotificationSubject{Title: "A"}, Repository: NotificationRepo{FullName: "o/r"}},
+		{ID: "2", Subject: NotificationSubject{Title: "B"}, Repository: NotificationRepo{FullName: "o/r"}},
+	}
+	m := newTestPicker(t, notifications, &recordingDoer{})
+
+	// Lowercase d acts on the selected item only.
+	updated, _ := m.Update(runeKey('d'))
+	m = updated.(pickerModel)
+	updated, _ = m.Update(runeKey('y'))
+	m = updated.(pickerModel)
+	if m.bulkRemaining != 0 {
+		t.Errorf("single action should not start bulk tracking, got remaining %d", m.bulkRemaining)
+	}
+}
+
