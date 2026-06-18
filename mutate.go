@@ -118,24 +118,25 @@ var threadActions = map[string]threadAction{
 }
 
 // runMarkRead marks the given notifications as read (see runMark).
-func runMarkRead(doer requestDoer, notifications []Notification, dryRun bool, in io.Reader, out io.Writer) error {
-	return runMark(doer, notifications, dryRun, in, out, "read")
+func runMarkRead(doer requestDoer, notifications []Notification, dryRun, assumeYes bool, in io.Reader, out io.Writer) error {
+	return runMark(doer, notifications, dryRun, assumeYes, in, out, "read")
 }
 
 // runMarkDone marks the given notifications as done (see runMark).
-func runMarkDone(doer requestDoer, notifications []Notification, dryRun bool, in io.Reader, out io.Writer) error {
-	return runMark(doer, notifications, dryRun, in, out, "done")
+func runMarkDone(doer requestDoer, notifications []Notification, dryRun, assumeYes bool, in io.Reader, out io.Writer) error {
+	return runMark(doer, notifications, dryRun, assumeYes, in, out, "done")
 }
 
 // runUnsubscribe unsubscribes from the given notifications (see runMark).
-func runUnsubscribe(doer requestDoer, notifications []Notification, dryRun bool, in io.Reader, out io.Writer) error {
-	return runMark(doer, notifications, dryRun, in, out, "unsubscribe")
+func runUnsubscribe(doer requestDoer, notifications []Notification, dryRun, assumeYes bool, in io.Reader, out io.Writer) error {
+	return runMark(doer, notifications, dryRun, assumeYes, in, out, "unsubscribe")
 }
 
 // runMark applies a thread action to the given notifications after listing them
 // and asking for confirmation. With dryRun set, it only reports what would
-// happen and never calls the API.
-func runMark(doer requestDoer, notifications []Notification, dryRun bool, in io.Reader, out io.Writer, action string) error {
+// happen and never calls the API. With assumeYes set, the confirmation prompt is
+// skipped (for unattended runs).
+func runMark(doer requestDoer, notifications []Notification, dryRun, assumeYes bool, in io.Reader, out io.Writer, action string) error {
 	a := threadActions[action]
 
 	if len(notifications) == 0 {
@@ -152,13 +153,15 @@ func runMark(doer requestDoer, notifications []Notification, dryRun bool, in io.
 	fmt.Fprintf(out, a.pending+"\n", len(notifications))
 	listNotifications(out, notifications)
 
-	ok, err := confirm(in, out, fmt.Sprintf(a.confirm, len(notifications)))
-	if err != nil {
-		return err
-	}
-	if !ok {
-		fmt.Fprintln(out, "Aborted; no notifications were changed")
-		return nil
+	if !assumeYes {
+		ok, err := confirm(in, out, fmt.Sprintf(a.confirm, len(notifications)))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			fmt.Fprintln(out, "Aborted; no notifications were changed")
+			return nil
+		}
 	}
 
 	for _, n := range notifications {

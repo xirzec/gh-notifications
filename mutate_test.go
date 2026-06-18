@@ -86,7 +86,7 @@ func TestMarkThreadReadError(t *testing.T) {
 func TestRunMarkReadEmpty(t *testing.T) {
 	doer := &recordingDoer{}
 	var out bytes.Buffer
-	if err := runMarkRead(doer, nil, false, strings.NewReader(""), &out); err != nil {
+	if err := runMarkRead(doer, nil, false, false, strings.NewReader(""), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(doer.calls) != 0 {
@@ -105,7 +105,7 @@ func TestRunMarkReadDryRun(t *testing.T) {
 	}
 	var out bytes.Buffer
 	// Provide "y" on stdin to prove dry-run never reads/acts on it.
-	if err := runMarkRead(doer, notifications, true, strings.NewReader("y\n"), &out); err != nil {
+	if err := runMarkRead(doer, notifications, true, false, strings.NewReader("y\n"), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(doer.calls) != 0 {
@@ -123,7 +123,7 @@ func TestRunMarkReadConfirmed(t *testing.T) {
 		{ID: "2", Subject: NotificationSubject{Title: "B"}, Repository: NotificationRepo{FullName: "o/r"}},
 	}
 	var out bytes.Buffer
-	if err := runMarkRead(doer, notifications, false, strings.NewReader("y\n"), &out); err != nil {
+	if err := runMarkRead(doer, notifications, false, false, strings.NewReader("y\n"), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := []string{"PATCH notifications/threads/1", "PATCH notifications/threads/2"}
@@ -141,7 +141,7 @@ func TestRunMarkReadAborted(t *testing.T) {
 		{ID: "1", Subject: NotificationSubject{Title: "A"}, Repository: NotificationRepo{FullName: "o/r"}},
 	}
 	var out bytes.Buffer
-	if err := runMarkRead(doer, notifications, false, strings.NewReader("n\n"), &out); err != nil {
+	if err := runMarkRead(doer, notifications, false, false, strings.NewReader("n\n"), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(doer.calls) != 0 {
@@ -158,7 +158,7 @@ func TestRunMarkDoneConfirmed(t *testing.T) {
 		{ID: "1", Subject: NotificationSubject{Title: "A"}, Repository: NotificationRepo{FullName: "o/r"}},
 	}
 	var out bytes.Buffer
-	if err := runMarkDone(doer, notifications, false, strings.NewReader("y\n"), &out); err != nil {
+	if err := runMarkDone(doer, notifications, false, false, strings.NewReader("y\n"), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(doer.calls) != 1 || doer.calls[0] != "DELETE notifications/threads/1" {
@@ -175,7 +175,7 @@ func TestRunUnsubscribeConfirmed(t *testing.T) {
 		{ID: "9", Subject: NotificationSubject{Title: "A"}, Repository: NotificationRepo{FullName: "o/r"}},
 	}
 	var out bytes.Buffer
-	if err := runUnsubscribe(doer, notifications, false, strings.NewReader("y\n"), &out); err != nil {
+	if err := runUnsubscribe(doer, notifications, false, false, strings.NewReader("y\n"), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := []string{
@@ -187,6 +187,42 @@ func TestRunUnsubscribeConfirmed(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Unsubscribed from and marked 1 notification(s) as done") {
 		t.Errorf("unexpected output %q", out.String())
+	}
+}
+
+func TestRunMarkReadAssumeYesSkipsConfirm(t *testing.T) {
+	doer := &recordingDoer{}
+	notifications := []Notification{
+		{ID: "1", Subject: NotificationSubject{Title: "A"}, Repository: NotificationRepo{FullName: "o/r"}},
+	}
+	var out bytes.Buffer
+	// Empty stdin proves no confirmation is read when assumeYes is set.
+	if err := runMarkRead(doer, notifications, false, true, strings.NewReader(""), &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(doer.calls) != 1 || doer.calls[0] != "PATCH notifications/threads/1" {
+		t.Errorf("calls = %v, want one PATCH", doer.calls)
+	}
+	if strings.Contains(out.String(), "[y/N]") {
+		t.Errorf("expected no confirmation prompt, got %q", out.String())
+	}
+}
+
+func TestRunMarkDoneAssumeYesAndDryRunMakesNoCalls(t *testing.T) {
+	doer := &recordingDoer{}
+	notifications := []Notification{
+		{ID: "1", Subject: NotificationSubject{Title: "A"}, Repository: NotificationRepo{FullName: "o/r"}},
+	}
+	var out bytes.Buffer
+	// dry-run takes precedence over assumeYes: still zero API calls.
+	if err := runMarkDone(doer, notifications, true, true, strings.NewReader(""), &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(doer.calls) != 0 {
+		t.Errorf("dry run made API calls: %v", doer.calls)
+	}
+	if !strings.Contains(out.String(), "Dry run") {
+		t.Errorf("expected dry-run notice, got %q", out.String())
 	}
 }
 

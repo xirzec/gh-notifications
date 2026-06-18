@@ -77,12 +77,31 @@ type options struct {
 	// dryRun, when true, reports what a mutating command would do without
 	// calling the API.
 	dryRun bool
+	// assumeYes, when true, skips the interactive confirmation for mutating
+	// commands (for unattended runs).
+	assumeYes bool
+	// tags holds the tags attached to a saved query (used by `save` and to
+	// select queries with `run --tag`).
+	tags []string
+}
+
+// stringSliceFlag collects repeated string flag values into a slice.
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string { return strings.Join(*s, ",") }
+
+func (s *stringSliceFlag) Set(v string) error {
+	*s = append(*s, v)
+	return nil
 }
 
 // parseArgs parses command-line arguments into options.
-func parseArgs(args []string) (options, error) {
-	fs := flag.NewFlagSet("gh-notifications", flag.ContinueOnError)
-	var opts options
+// newFlagSet creates a flag set bound to opts, registering every notification
+// flag (filters, action, and behavior flags). The returned tags pointer holds
+// any repeated --tag values after parsing. The flag set is shared by the default
+// command and the `save`/`run` subcommands so they accept the same flags.
+func newFlagSet(name string, opts *options) (*flag.FlagSet, *stringSliceFlag) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.StringVar(&opts.repo, "repo", "", "Filter notifications by repository (OWNER/REPO)")
 	fs.StringVar(&opts.repo, "R", "", "Filter notifications by repository (OWNER/REPO) (shorthand)")
 	fs.BoolVar(&opts.all, "all", false, "Include notifications already marked as read")
@@ -100,18 +119,23 @@ func parseArgs(args []string) (options, error) {
 	fs.BoolVar(&opts.markDone, "mark-done", false, "Mark the matching notifications as done, removing them from the inbox (asks for confirmation)")
 	fs.BoolVar(&opts.unsubscribe, "unsubscribe", false, "Unsubscribe from the matching notification threads (asks for confirmation)")
 	fs.BoolVar(&opts.dryRun, "dry-run", false, "Show what a mutating command would do without calling the API")
-	if err := fs.Parse(args); err != nil {
-		return options{}, err
-	}
+	fs.BoolVar(&opts.assumeYes, "yes", false, "Skip the confirmation prompt for mutating commands")
+	fs.BoolVar(&opts.assumeYes, "y", false, "Skip the confirmation prompt for mutating commands (shorthand)")
+	var tags stringSliceFlag
+	fs.Var(&tags, "tag", "Tag for a saved query (repeatable); with `run`, select queries by tag")
+	return fs, &tags
+}
 
+// validateOptions checks parsed options for invalid or conflicting values.
+func validateOptions(opts options) error {
 	if opts.repo != "" {
 		if !strings.Contains(strings.Trim(opts.repo, "/"), "/") || strings.Count(opts.repo, "/") != 1 {
-			return options{}, fmt.Errorf("invalid repository %q: expected OWNER/REPO format", opts.repo)
+			return fmt.Errorf("invalid repository %q: expected OWNER/REPO format", opts.repo)
 		}
 	}
 	if opts.state != "" {
 		if !validStates[normalizeState(opts.state)] {
-			return options{}, fmt.Errorf("invalid state %q: expected open, closed, merged, not-planned, or completed", opts.state)
+			return fmt.Errorf("invalid state %q: expected open, closed, merged, not-planned, or completed", opts.state)
 		}
 	}
 	mutations := 0
@@ -121,7 +145,20 @@ func parseArgs(args []string) (options, error) {
 		}
 	}
 	if mutations > 1 {
-		return options{}, fmt.Errorf("only one of --mark-read, --mark-done, or --unsubscribe may be used at a time")
+		return fmt.Errorf("only one of --mark-read, --mark-done, or --unsubscribe may be used at a time")
+	}
+	return nil
+}
+
+func parseArgs(args []string) (options, error) {
+	var opts options
+	fs, tags := newFlagSet("gh-notifications", &opts)
+	if err := fs.Parse(args); err != nil {
+		return options{}, err
+	}
+	opts.tags = *tags
+	if err := validateOptions(opts); err != nil {
+		return options{}, err
 	}
 	return opts, nil
 }
@@ -496,6 +533,31 @@ func relativeAge(t, now time.Time) string {
 	}
 }
 
+// loadFilteredNotifications fetches the authenticated user's notifications and
+// applies all of opts' filters (title, type, and the batched GraphQL
+// state/draft filters), returning the resulting slice. REST and GraphQL quota
+// are recorded on the tracker.
+func loadFilteredNotifications(tracker *rateLimitTracker, opts options) ([]Notification, error) {
+	notifications, err := fetchNotifications(tracker, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	notifications = filterByTitle(notifications, opts.filter)
+	notifications = filterByType(notifications, opts.itemType)
+	if opts.state != "" || opts.draft {
+		gqlClient, err := api.DefaultGraphQLClient()
+		if err != nil {
+			return nil, err
+		}
+		details, gqlQuota := fetchItemDetails(gqlClient, notifications)
+		tracker.setGraphQL(gqlQuota)
+		notifications = filterByState(notifications, details, opts.state)
+		notifications = filterByDraft(notifications, details, opts.draft)
+	}
+	return notifications, nil
+}
+
 // runNotifications fetches and displays the authenticated user's notifications.
 func runNotifications(opts options) error {
 	client, err := api.DefaultRESTClient()
@@ -507,32 +569,19 @@ func runNotifications(opts options) error {
 	tracker := newRateLimitTracker(client)
 	defer tracker.report(os.Stderr)
 
-	notifications, err := fetchNotifications(tracker, opts)
+	notifications, err := loadFilteredNotifications(tracker, opts)
 	if err != nil {
 		return err
 	}
 
-	notifications = filterByTitle(notifications, opts.filter)
-	notifications = filterByType(notifications, opts.itemType)
-	if opts.state != "" || opts.draft {
-		gqlClient, err := api.DefaultGraphQLClient()
-		if err != nil {
-			return err
-		}
-		details, gqlQuota := fetchItemDetails(gqlClient, notifications)
-		tracker.setGraphQL(gqlQuota)
-		notifications = filterByState(notifications, details, opts.state)
-		notifications = filterByDraft(notifications, details, opts.draft)
-	}
-
 	if opts.markRead {
-		return runMarkRead(tracker, notifications, opts.dryRun, os.Stdin, os.Stdout)
+		return runMarkRead(tracker, notifications, opts.dryRun, opts.assumeYes, os.Stdin, os.Stdout)
 	}
 	if opts.markDone {
-		return runMarkDone(tracker, notifications, opts.dryRun, os.Stdin, os.Stdout)
+		return runMarkDone(tracker, notifications, opts.dryRun, opts.assumeYes, os.Stdin, os.Stdout)
 	}
 	if opts.unsubscribe {
-		return runUnsubscribe(tracker, notifications, opts.dryRun, os.Stdin, os.Stdout)
+		return runUnsubscribe(tracker, notifications, opts.dryRun, opts.assumeYes, os.Stdin, os.Stdout)
 	}
 
 	if opts.interactive {

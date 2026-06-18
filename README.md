@@ -62,6 +62,7 @@ The table columns are `REPOSITORY`, `TYPE`, `TITLE`, and `AGE` (a short relative
 | `--mark-done` | Mark the matching notifications as done (removes them from the inbox) |
 | `--unsubscribe` | Unsubscribe from the matching threads (also marks them done) |
 | `--dry-run` | Show what a mutating command would do without calling the API |
+| `-y`, `--yes` | Skip the confirmation prompt for mutating commands (for unattended runs) |
 
 Filters compose, so you can combine them freely.
 
@@ -103,6 +104,54 @@ with `--dry-run` to preview without making API calls.
   "Unsubscribe" behavior.
 
 Only one mutating action may be used at a time.
+
+## Saved queries
+
+Save a set of filters (and an optional action and tags) under a name, then re-run it later —
+interactively or unattended. Handy for recurring chores like "always unsubscribe from PRs in this
+repo".
+
+```bash
+# Save a reusable query (filters + an optional action + tags)
+gh notifications save cleanup-bot-prs --repo octo-org/noisy --type pr --unsubscribe --tag cleanup
+
+# List saved queries
+gh notifications list
+
+# Run one by name (applies its filters, then its action)
+gh notifications run cleanup-bot-prs
+
+# Run it, but drop into the interactive picker instead of auto-applying the action
+gh notifications run cleanup-bot-prs --interactive
+
+# Preview without changing anything, then run unattended (no confirmation prompt)
+gh notifications run cleanup-bot-prs --dry-run
+gh notifications run cleanup-bot-prs --yes
+
+# Run every saved query carrying a tag (great for a single scheduled job)
+gh notifications run --tag cleanup --yes
+
+# Delete a saved query
+gh notifications delete cleanup-bot-prs
+
+# Open the saved-queries file in your editor
+gh notifications edit
+```
+
+Notes:
+
+- Queries are stored as YAML in your `gh` config directory (`notifications.yml`): on Windows
+  `%AppData%\GitHub CLI\`, on macOS/Linux `~/.config/gh/`. The file is human-editable — use
+  `gh notifications edit` to open it in your editor (resolved via `GH_EDITOR`/`EDITOR`, the `gh`
+  `editor` config, or git's `core.editor`).
+- Saving over an existing name asks for confirmation first; pass `--yes` to overwrite without
+  prompting.
+- `run --interactive` always opens the picker (it takes precedence over any saved action), so you
+  can review before triaging by hand.
+- `--yes` enables unattended mutation — validate with `--dry-run` first, and prefer a throwaway
+  account for automated/scheduled runs. Scheduling itself (cron, Task Scheduler) is left to you.
+
+Only one mutating action may be saved per query.
 
 ## Interactive mode
 

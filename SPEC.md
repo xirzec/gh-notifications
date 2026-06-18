@@ -187,4 +187,96 @@ gh notifications --unsubscribe --dry-run
 - Same confirmation and `--dry-run` safety behavior as the mark commands
 - Only one of `--mark-read`, `--mark-done`, or `--unsubscribe` may be used at a time
 
+### Saved Queries
+
+Persist a named set of filters (and an optional action and tags) so they can be re-run later,
+interactively or unattended.
+
+A saved query is **unified**: it stores the same filters as the listing command plus an optional
+mutating action (`read`, `done`, or `unsubscribe`) and any number of free-form tags. Queries are
+managed with subcommands; the bare `gh notifications [flags]` listing behavior is unchanged.
+
+#### Storage
+
+- Queries are stored as YAML in the `gh` CLI config directory (`config.ConfigDir()`), in a file
+  named `notifications.yml` — separate from `gh`'s own `config.yml`/`hosts.yml`
+  - Windows: `%AppData%\GitHub CLI\notifications.yml`
+  - macOS/Linux: `~/.config/gh/notifications.yml` (honoring `GH_CONFIG_DIR`/`XDG_CONFIG_HOME`)
+- The file is human-editable; schema:
+
+```yaml
+queries:
+  - name: cleanup-bot-prs
+    repo: owner/repo
+    type: pr
+    action: unsubscribe   # "" | read | done | unsubscribe
+    tags: [cleanup]
+```
+
+#### Saving a query
+
+```
+gh notifications save <name> [--repo R] [--filter T] [--type T] [--state S] \
+    [--draft] [--all] [--mark-read|--mark-done|--unsubscribe] [--tag t1 --tag t2]
+```
+
+- Captures the given filter flags and an optional action under `<name>`
+- `<name>` must be the first argument (`save <name> [flags]`)
+- `--tag` is repeatable; tags let related queries be run together (see below)
+- Saving over an existing name asks for a `[y/N]` confirmation before overwriting (reports
+  `Updated query` instead of `Saved query`); pass `--yes`/`-y` to skip the prompt
+
+#### Listing saved queries
+
+```
+gh notifications list
+```
+
+- Prints each saved query's name, a summary of its filters/action, and its tags
+- Prints `No saved queries` when none are stored
+
+#### Running a saved query
+
+```
+gh notifications run <name> [--dry-run] [--yes] [--interactive]
+gh notifications run --tag cleanup [--dry-run] [--yes]
+```
+
+- Applies the saved query's filters (reusing the same fetch + batched GraphQL pipeline as the
+  listing command), then:
+  - With `--interactive`/`-i`: opens the interactive picker pre-loaded with the results. This
+    **takes precedence over any saved action** — the user triages by hand (open/`r`/`d`/`u`/bulk)
+    rather than the action being auto-applied. This is the "run a saved query, then drop into
+    interactive mode" flow
+  - Else if the query has an action: runs it, asking for the usual `[y/N]` confirmation unless
+    `--yes`/`-y` is given
+  - Else (no action): prints the table, like the default listing
+- `--tag NAME` runs **every** saved query carrying that tag (repeatable; queries are de-duplicated
+  by name). `--dry-run`/`--yes` apply to the whole batch; `--interactive` cannot be combined with
+  `--tag`. Each query prints a `==> <name>` header
+- `--dry-run` makes **no** API calls; `--yes` skips the confirmation for unattended runs
+
+> Safety: `--yes` enables unattended mutation. Validate a saved action with `--dry-run` before
+> running it with `--yes`, and prefer a throwaway account for automated runs. See
+> `.github/copilot-instructions.md`.
+
+#### Deleting a saved query
+
+```
+gh notifications delete <name>
+```
+
+- Removes the named query; errors if no such query exists
+
+#### Editing the queries file
+
+```
+gh notifications edit
+```
+
+- Opens the saved-queries YAML file in your editor (creating it first if it does not yet exist)
+- The editor is resolved the same way as `gh`: `GH_EDITOR`, the `editor` config option, git's
+  `core.editor`, `VISUAL`, `EDITOR`, then a platform default (Notepad on Windows, `vi` elsewhere)
+
 <!-- Add new features below as they are specified -->
+
