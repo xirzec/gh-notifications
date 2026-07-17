@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -19,6 +21,155 @@ func TestExtractName(t *testing.T) {
 	name, rest = extractName(nil)
 	if name != "" || len(rest) != 0 {
 		t.Errorf("expected empty, got %q, %v", name, rest)
+	}
+}
+
+func TestRunHelp(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}, {"--state", "bogus", "--help"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var out bytes.Buffer
+			if err := runWithIO(args, strings.NewReader(""), &out); err != nil {
+				t.Fatalf("runWithIO(%v): %v", args, err)
+			}
+			for _, want := range []string{
+				"gh notifications [flags]",
+				"Saved query commands:",
+				"save <name> [flags]",
+				"run --tag <tag> [flags]",
+				"delete <name>",
+				"edit",
+				"--mark-read",
+			} {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("help missing %q:\n%s", want, out.String())
+				}
+			}
+			if strings.Contains(out.String(), "\n  -help") || strings.Contains(out.String(), "\n  -mark-read") {
+				t.Errorf("long flags should use two dashes:\n%s", out.String())
+			}
+		})
+	}
+}
+
+func TestHelpUsesConventionalFlagPrefixes(t *testing.T) {
+	var out bytes.Buffer
+	if err := runWithIO([]string{"--help"}, strings.NewReader(""), &out); err != nil {
+		t.Fatalf("runWithIO: %v", err)
+	}
+	for _, want := range []string{"\n  -h ", "\n  --help ", "\n  -R string ", "\n  --repo string "} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("help missing conventionally formatted flag %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunSubcommandHelp(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"save", []string{"save", "--help"}, "gh notifications save <name> [flags]"},
+		{"save after name", []string{"save", "cleanup", "--help"}, "gh notifications save <name> [flags]"},
+		{"list", []string{"list", "-h"}, "gh notifications list"},
+		{"run", []string{"run", "--help"}, "gh notifications run <name> [flags]"},
+		{"delete", []string{"delete", "--help"}, "gh notifications delete <name>"},
+		{"edit", []string{"edit", "--help"}, "gh notifications edit"},
+		{"help topic", []string{"help", "save"}, "gh notifications save <name> [flags]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := runWithIO(tc.args, strings.NewReader(""), &out); err != nil {
+				t.Fatalf("runWithIO(%v): %v", tc.args, err)
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Errorf("help missing %q:\n%s", tc.want, out.String())
+			}
+		})
+	}
+}
+
+func TestRunHelpErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"unknown topic", []string{"help", "unknown"}, `unknown help topic "unknown"`},
+		{"too many arguments", []string{"help", "save", "extra"}, "help accepts at most one command"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runWithIO(tc.args, strings.NewReader(""), io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("runWithIO(%v) error = %v, want %q", tc.args, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestHelpDoesNotModifySavedQueries(t *testing.T) {
+	withTempQueriesFile(t)
+
+	editorCalled := false
+	prev := editorRunner
+	editorRunner = func(*exec.Cmd) error {
+		editorCalled = true
+		return nil
+	}
+	t.Cleanup(func() { editorRunner = prev })
+
+	for _, args := range [][]string{{"save", "--help"}, {"edit", "--help"}} {
+		var out bytes.Buffer
+		if err := runWithIO(args, strings.NewReader(""), &out); err != nil {
+			t.Fatalf("runWithIO(%v): %v", args, err)
+		}
+		if _, err := os.Stat(queriesFilePath()); !os.IsNotExist(err) {
+			t.Fatalf("runWithIO(%v) created the saved queries file; stat error = %v", args, err)
+		}
+	}
+	if editorCalled {
+		t.Error("edit --help launched the editor")
+	}
+}
+
+func TestSaveHelpOnlyDocumentsSupportedFlags(t *testing.T) {
+	var out bytes.Buffer
+	if err := runWithIO([]string{"save", "--help"}, strings.NewReader(""), &out); err != nil {
+		t.Fatalf("runWithIO: %v", err)
+	}
+	for _, want := range []string{"--tag value", "--yes", "--mark-read"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("save help missing %q:\n%s", want, out.String())
+		}
+	}
+	for _, unwanted := range []string{"--dry-run", "--interactive", "--show-reason"} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Errorf("save help unexpectedly contains %q:\n%s", unwanted, out.String())
+		}
+	}
+}
+
+func TestCommandFlagSetsRejectUnsupportedNoOpFlags(t *testing.T) {
+	t.Run("default rejects tag", func(t *testing.T) {
+		var opts options
+		fs := newFlagSet("gh-notifications", &opts)
+		fs.SetOutput(io.Discard)
+		if err := fs.Parse([]string{"--tag", "cleanup"}); err == nil {
+			t.Error("expected --tag to be rejected by the default command")
+		}
+	})
+
+	for _, arg := range []string{"--dry-run", "--interactive", "--show-reason"} {
+		t.Run("save rejects "+arg, func(t *testing.T) {
+			var opts options
+			fs, _ := newSaveFlagSet(&opts)
+			fs.SetOutput(io.Discard)
+			if err := fs.Parse([]string{arg}); err == nil {
+				t.Errorf("expected %s to be rejected by save", arg)
+			}
+		})
 	}
 }
 

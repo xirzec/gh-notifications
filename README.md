@@ -29,9 +29,11 @@ gh extension install .
 
 ```bash
 gh notifications [flags]
+gh notifications <command> [args]
 ```
 
-Run with no flags to print your unread notifications:
+Run `gh notifications --help` to see all flags and saved-query commands. Run with no flags to
+print your unread notifications:
 
 ```bash
 gh notifications
@@ -63,6 +65,7 @@ The table columns are `REPOSITORY`, `TYPE`, `TITLE`, and `AGE` (a short relative
 | `--unsubscribe` | Unsubscribe from the matching threads (also marks them done) |
 | `--dry-run` | Show what a mutating command would do without calling the API |
 | `-y`, `--yes` | Skip the confirmation prompt for mutating commands (for unattended runs) |
+| `-h`, `--help` | Show command help |
 
 Filters compose, so you can combine them freely.
 
