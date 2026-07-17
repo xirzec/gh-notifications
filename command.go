@@ -12,27 +12,39 @@ import (
 	"github.com/cli/go-gh/v2/pkg/term"
 )
 
-// run dispatches the command line to a saved-query subcommand or, when no known
-// subcommand is given, to the default listing/filtering flow. The default flow
-// is unchanged so existing invocations keep working.
 func run(args []string) error {
+	return runWithIO(args, os.Stdin, os.Stdout)
+}
+
+// runWithIO dispatches the command line to a saved-query subcommand or, when no
+// known subcommand is given, to the default listing/filtering flow.
+func runWithIO(args []string, in io.Reader, out io.Writer) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "-h", "--help":
+			showRootUsage(out)
+			return nil
+		case "help":
+			return runHelp(args[1:], in, out)
 		case "save":
-			return runSave(args[1:], os.Stdin, os.Stdout)
+			return runSave(args[1:], in, out)
 		case "list":
-			return runListQueries(args[1:], os.Stdout)
+			return runListQueries(args[1:], out)
 		case "run":
-			return runSavedQuery(args[1:], os.Stdin, os.Stdout)
+			return runSavedQuery(args[1:], in, out)
 		case "delete":
-			return runDeleteQuery(args[1:], os.Stdout)
+			return runDeleteQuery(args[1:], out)
 		case "edit":
-			return runEditQueries(args[1:], os.Stdout)
+			return runEditQueries(args[1:], out)
 		}
 	}
 	opts, err := parseArgs(args)
 	if err != nil {
 		return err
+	}
+	if opts.help {
+		showRootUsage(out)
+		return nil
 	}
 	return runNotifications(opts)
 }
@@ -49,18 +61,33 @@ func extractName(args []string) (name string, rest []string) {
 // runSave persists the given filters (and optional action/tags) under a name.
 // When a query with the same name already exists, it asks for confirmation
 // before overwriting, unless --yes is given.
+func newSaveFlagSet(opts *options) (*flag.FlagSet, *stringSliceFlag) {
+	fs := flag.NewFlagSet("gh-notifications save", flag.ContinueOnError)
+	addFilterFlags(fs, opts)
+	addActionFlags(fs, opts)
+	addAssumeYesFlags(fs, opts)
+	var tags stringSliceFlag
+	fs.Var(&tags, "tag", "Tag for the saved query (repeatable)")
+	addHelpFlags(fs, &opts.help)
+	setSaveUsage(fs)
+	return fs, &tags
+}
+
 func runSave(args []string, in io.Reader, out io.Writer) error {
 	name, rest := extractName(args)
-	if name == "" {
-		return fmt.Errorf("save requires a query name: gh notifications save <name> [flags]")
-	}
-
 	var opts options
-	fs, tags := newFlagSet("gh-notifications save", &opts)
+	fs, tags := newSaveFlagSet(&opts)
 	if err := fs.Parse(rest); err != nil {
 		return err
 	}
 	opts.tags = *tags
+	if opts.help {
+		showFlagSetUsage(fs, out)
+		return nil
+	}
+	if name == "" {
+		return fmt.Errorf("save requires a query name: gh notifications save <name> [flags]")
+	}
 	if err := validateOptions(opts); err != nil {
 		return err
 	}
@@ -95,9 +122,16 @@ func runSave(args []string, in io.Reader, out io.Writer) error {
 
 // runListQueries prints all saved queries.
 func runListQueries(args []string, out io.Writer) error {
+	var help bool
 	fs := flag.NewFlagSet("gh-notifications list", flag.ContinueOnError)
+	addHelpFlags(fs, &help)
+	setListUsage(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if help {
+		showFlagSetUsage(fs, out)
+		return nil
 	}
 
 	queries, err := loadQueries()
@@ -121,12 +155,19 @@ func runListQueries(args []string, out io.Writer) error {
 // runDeleteQuery removes a saved query by name.
 func runDeleteQuery(args []string, out io.Writer) error {
 	name, rest := extractName(args)
-	if name == "" {
-		return fmt.Errorf("delete requires a query name: gh notifications delete <name>")
-	}
+	var help bool
 	fs := flag.NewFlagSet("gh-notifications delete", flag.ContinueOnError)
+	addHelpFlags(fs, &help)
+	setDeleteUsage(fs)
 	if err := fs.Parse(rest); err != nil {
 		return err
+	}
+	if help {
+		showFlagSetUsage(fs, out)
+		return nil
+	}
+	if name == "" {
+		return fmt.Errorf("delete requires a query name: gh notifications delete <name>")
 	}
 
 	queries, err := loadQueries()
@@ -156,9 +197,16 @@ var editorRunner = func(cmd *exec.Cmd) error {
 // runEditQueries opens the saved-queries file in the user's editor, creating an
 // empty file first if none exists yet.
 func runEditQueries(args []string, out io.Writer) error {
+	var help bool
 	fs := flag.NewFlagSet("gh-notifications edit", flag.ContinueOnError)
+	addHelpFlags(fs, &help)
+	setEditUsage(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if help {
+		showFlagSetUsage(fs, out)
+		return nil
 	}
 
 	// Ensure the file exists so the editor has something to open. loadQueries
@@ -192,13 +240,10 @@ type runFlags struct {
 	assumeYes   bool
 	interactive bool
 	tags        []string
+	help        bool
 }
 
-// parseRunArgs parses the `run` subcommand arguments into an optional query name
-// and the run-level flags.
-func parseRunArgs(args []string) (string, runFlags, error) {
-	name, rest := extractName(args)
-	var rf runFlags
+func newRunFlagSet(rf *runFlags) (*flag.FlagSet, *stringSliceFlag) {
 	fs := flag.NewFlagSet("gh-notifications run", flag.ContinueOnError)
 	fs.BoolVar(&rf.dryRun, "dry-run", false, "Show what would happen without calling the API")
 	fs.BoolVar(&rf.assumeYes, "yes", false, "Skip the confirmation prompt for mutating actions")
@@ -207,10 +252,21 @@ func parseRunArgs(args []string) (string, runFlags, error) {
 	fs.BoolVar(&rf.interactive, "i", false, "Open the saved query's results in the interactive picker (shorthand)")
 	var tags stringSliceFlag
 	fs.Var(&tags, "tag", "Run every saved query carrying this tag (repeatable)")
+	addHelpFlags(fs, &rf.help)
+	setRunUsage(fs)
+	return fs, &tags
+}
+
+// parseRunArgs parses the `run` subcommand arguments into an optional query name
+// and the run-level flags.
+func parseRunArgs(args []string) (string, runFlags, error) {
+	name, rest := extractName(args)
+	var rf runFlags
+	fs, tags := newRunFlagSet(&rf)
 	if err := fs.Parse(rest); err != nil {
 		return "", runFlags{}, err
 	}
-	rf.tags = tags
+	rf.tags = *tags
 	return name, rf, nil
 }
 
@@ -220,6 +276,10 @@ func runSavedQuery(args []string, in io.Reader, out io.Writer) error {
 	name, rf, err := parseRunArgs(args)
 	if err != nil {
 		return err
+	}
+	if rf.help {
+		showRunUsage(out)
+		return nil
 	}
 
 	switch {

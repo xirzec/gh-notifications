@@ -55,8 +55,8 @@ type options struct {
 	// itemType, when set, keeps only notifications of a given subject type
 	// (e.g. issue, pr).
 	itemType string
-	// state, when set, keeps only issues/PRs in the given state
-	// (open, closed, or merged). Requires fetching each item.
+	// state, when set, keeps only issues/PRs in the given state or close
+	// reason. Requires fetching each item.
 	state string
 	// draft, when true, keeps only draft pull requests. Requires fetching
 	// each item.
@@ -77,12 +77,12 @@ type options struct {
 	// dryRun, when true, reports what a mutating command would do without
 	// calling the API.
 	dryRun bool
-	// assumeYes, when true, skips the interactive confirmation for mutating
-	// commands (for unattended runs).
+	// assumeYes, when true, skips interactive confirmations.
 	assumeYes bool
-	// tags holds the tags attached to a saved query (used by `save` and to
-	// select queries with `run --tag`).
+	// tags holds the tags attached by the `save` command.
 	tags []string
+	// help, when true, prints command usage without making API calls.
+	help bool
 }
 
 // stringSliceFlag collects repeated string flag values into a slice.
@@ -95,13 +95,7 @@ func (s *stringSliceFlag) Set(v string) error {
 	return nil
 }
 
-// parseArgs parses command-line arguments into options.
-// newFlagSet creates a flag set bound to opts, registering every notification
-// flag (filters, action, and behavior flags). The returned tags pointer holds
-// any repeated --tag values after parsing. The flag set is shared by the default
-// command and the `save`/`run` subcommands so they accept the same flags.
-func newFlagSet(name string, opts *options) (*flag.FlagSet, *stringSliceFlag) {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+func addFilterFlags(fs *flag.FlagSet, opts *options) {
 	fs.StringVar(&opts.repo, "repo", "", "Filter notifications by repository (OWNER/REPO)")
 	fs.StringVar(&opts.repo, "R", "", "Filter notifications by repository (OWNER/REPO) (shorthand)")
 	fs.BoolVar(&opts.all, "all", false, "Include notifications already marked as read")
@@ -110,20 +104,34 @@ func newFlagSet(name string, opts *options) (*flag.FlagSet, *stringSliceFlag) {
 	fs.StringVar(&opts.filter, "f", "", "Keep only notifications whose title contains this text (case-insensitive) (shorthand)")
 	fs.StringVar(&opts.itemType, "type", "", "Keep only notifications of this type (issue, pr, commit, release, discussion, ...)")
 	fs.StringVar(&opts.itemType, "t", "", "Keep only notifications of this type (shorthand)")
-	fs.StringVar(&opts.state, "state", "", "Keep only issues/PRs in this state (open, closed, merged); closed excludes merged PRs")
+	fs.StringVar(&opts.state, "state", "", "Keep only issues/PRs in this state (open, closed, merged, not-planned, completed); closed excludes merged PRs")
 	fs.BoolVar(&opts.draft, "draft", false, "Keep only draft pull requests")
-	fs.BoolVar(&opts.interactive, "interactive", false, "Interactively select a notification to open in the browser")
-	fs.BoolVar(&opts.interactive, "i", false, "Interactively select a notification to open in the browser (shorthand)")
-	fs.BoolVar(&opts.showReason, "show-reason", false, "Include the REASON column in the output")
+}
+
+func addActionFlags(fs *flag.FlagSet, opts *options) {
 	fs.BoolVar(&opts.markRead, "mark-read", false, "Mark the matching notifications as read (asks for confirmation)")
 	fs.BoolVar(&opts.markDone, "mark-done", false, "Mark the matching notifications as done, removing them from the inbox (asks for confirmation)")
 	fs.BoolVar(&opts.unsubscribe, "unsubscribe", false, "Unsubscribe from the matching notification threads (asks for confirmation)")
-	fs.BoolVar(&opts.dryRun, "dry-run", false, "Show what a mutating command would do without calling the API")
+}
+
+func addAssumeYesFlags(fs *flag.FlagSet, opts *options) {
 	fs.BoolVar(&opts.assumeYes, "yes", false, "Skip the confirmation prompt for mutating commands")
 	fs.BoolVar(&opts.assumeYes, "y", false, "Skip the confirmation prompt for mutating commands (shorthand)")
-	var tags stringSliceFlag
-	fs.Var(&tags, "tag", "Tag for a saved query (repeatable); with `run`, select queries by tag")
-	return fs, &tags
+}
+
+// newFlagSet creates the flag set for the default notification listing and
+// mutation flow.
+func newFlagSet(name string, opts *options) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	addFilterFlags(fs, opts)
+	fs.BoolVar(&opts.interactive, "interactive", false, "Interactively select a notification to open in the browser")
+	fs.BoolVar(&opts.interactive, "i", false, "Interactively select a notification to open in the browser (shorthand)")
+	fs.BoolVar(&opts.showReason, "show-reason", false, "Include the REASON column in the output")
+	addActionFlags(fs, opts)
+	fs.BoolVar(&opts.dryRun, "dry-run", false, "Show what a mutating command would do without calling the API")
+	addAssumeYesFlags(fs, opts)
+	addHelpFlags(fs, &opts.help)
+	return fs
 }
 
 // validateOptions checks parsed options for invalid or conflicting values.
@@ -150,13 +158,17 @@ func validateOptions(opts options) error {
 	return nil
 }
 
+// parseArgs parses command-line arguments into options.
 func parseArgs(args []string) (options, error) {
 	var opts options
-	fs, tags := newFlagSet("gh-notifications", &opts)
+	fs := newFlagSet("gh-notifications", &opts)
+	setRootUsage(fs)
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
-	opts.tags = *tags
+	if opts.help {
+		return opts, nil
+	}
 	if err := validateOptions(opts); err != nil {
 		return options{}, err
 	}

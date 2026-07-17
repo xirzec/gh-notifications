@@ -6,6 +6,20 @@ A GitHub CLI extension for managing GitHub notifications from the terminal.
 
 `gh notifications` provides a streamlined interface to view, triage, and act on GitHub notifications without leaving the terminal.
 
+### Command Help
+
+```
+gh notifications --help
+gh notifications help
+gh notifications help save
+```
+
+- `-h`/`--help` and `help` print usage and exit successfully without making API calls
+- Top-level help lists the saved-query commands so that `save`, `list`, `run`, `delete`, and `edit`
+  are discoverable
+- Every saved-query subcommand supports `-h`/`--help`; `help <command>` prints the same
+  subcommand-specific usage
+
 ### API Quota Reporting
 
 On exit, the program prints the remaining GitHub API quota to stderr, based on the most recent
@@ -279,4 +293,3 @@ gh notifications edit
   `core.editor`, `VISUAL`, `EDITOR`, then a platform default (Notepad on Windows, `vi` elsewhere)
 
 <!-- Add new features below as they are specified -->
-
