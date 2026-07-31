@@ -177,6 +177,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Successful marks are removed from the list and the source of truth;
 		// failed ones stay so the remaining list reflects what still needs
 		// attention.
+		var focusCmd tea.Cmd
 		if msg.err == nil {
 			m.removeFromAll(msg.id)
 			for i, it := range m.list.Items() {
@@ -184,6 +185,10 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.list.RemoveItem(i)
 					break
 				}
+			}
+			if m.focusRepo != "" && len(m.list.Items()) == 0 {
+				m.focusRepo = ""
+				focusCmd = m.applyFocus()
 			}
 		}
 
@@ -197,15 +202,18 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.bulkRemaining--
 			if m.bulkRemaining > 0 {
-				return m, nil
+				return m, focusCmd
 			}
-			return m, m.list.NewStatusMessage(m.bulkSummary())
+			return m, tea.Batch(focusCmd, m.list.NewStatusMessage(m.bulkSummary()))
 		}
 
 		if msg.err != nil {
 			return m, m.list.NewStatusMessage("Error: " + msg.err.Error())
 		}
-		return m, m.list.NewStatusMessage(threadActions[msg.action].past + ": " + msg.title)
+		return m, tea.Batch(
+			focusCmd,
+			m.list.NewStatusMessage(threadActions[msg.action].past+": "+msg.title),
+		)
 
 	case tea.KeyMsg:
 		// Ctrl+C always quits, even while filtering or confirming.

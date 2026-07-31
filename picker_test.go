@@ -272,6 +272,81 @@ func TestPickerFocusRepo(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("successful bulk action exits an emptied focus", func(t *testing.T) {
+		m := newTestPicker(t, append([]Notification(nil), notifications...), &recordingDoer{})
+		updated, _ := m.Update(runeKey('f'))
+		m = updated.(pickerModel)
+		updated, _ = m.Update(runeKey('D'))
+		m = updated.(pickerModel)
+		updated, _ = m.Update(runeKey('y'))
+		m = updated.(pickerModel)
+
+		updated, _ = m.Update(markedMsg{id: "1", title: "A", action: "done"})
+		m = updated.(pickerModel)
+		if m.focusRepo == "" {
+			t.Fatal("focus cleared before the repository was empty")
+		}
+
+		updated, _ = m.Update(markedMsg{id: "2", title: "B", action: "done"})
+		m = updated.(pickerModel)
+		if m.focusRepo != "" {
+			t.Errorf("focusRepo = %q, want empty", m.focusRepo)
+		}
+		items := m.list.Items()
+		if len(items) != 1 {
+			t.Fatalf("items = %d, want 1 remaining notification", len(items))
+		}
+		if ni, ok := items[0].(notificationItem); !ok || ni.n.ID != "3" {
+			t.Errorf("remaining item = %+v, want ID 3", items[0])
+		}
+	})
+
+	t.Run("successful single action exits an emptied focus", func(t *testing.T) {
+		singleRepoNotification := []Notification{notifications[0], notifications[2]}
+		m := newTestPicker(t, singleRepoNotification, &recordingDoer{})
+		updated, _ := m.Update(runeKey('f'))
+		m = updated.(pickerModel)
+		updated, _ = m.Update(runeKey('d'))
+		m = updated.(pickerModel)
+		updated, _ = m.Update(runeKey('y'))
+		m = updated.(pickerModel)
+
+		updated, _ = m.Update(markedMsg{id: "1", title: "A", action: "done"})
+		m = updated.(pickerModel)
+		if m.focusRepo != "" {
+			t.Errorf("focusRepo = %q, want empty", m.focusRepo)
+		}
+		if got := len(m.list.Items()); got != 1 {
+			t.Errorf("items = %d, want 1 remaining notification", got)
+		}
+	})
+
+	t.Run("failed bulk action retains focus", func(t *testing.T) {
+		m := newTestPicker(t, append([]Notification(nil), notifications...), &recordingDoer{})
+		updated, _ := m.Update(runeKey('f'))
+		m = updated.(pickerModel)
+		updated, _ = m.Update(runeKey('D'))
+		m = updated.(pickerModel)
+		updated, _ = m.Update(runeKey('y'))
+		m = updated.(pickerModel)
+
+		updated, _ = m.Update(markedMsg{id: "1", title: "A", action: "done"})
+		m = updated.(pickerModel)
+		updated, _ = m.Update(markedMsg{id: "2", title: "B", action: "done", err: errors.New("boom")})
+		m = updated.(pickerModel)
+
+		if m.focusRepo != "a/x" {
+			t.Errorf("focusRepo = %q, want a/x", m.focusRepo)
+		}
+		items := m.list.Items()
+		if len(items) != 1 {
+			t.Fatalf("items = %d, want failed notification retained", len(items))
+		}
+		if ni, ok := items[0].(notificationItem); !ok || ni.n.ID != "2" {
+			t.Errorf("remaining item = %+v, want failed ID 2", items[0])
+		}
+	})
 }
 
 func TestPickerMarkedMsgRemovesFromSourceOfTruth(t *testing.T) {
