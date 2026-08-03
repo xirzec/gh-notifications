@@ -354,7 +354,7 @@ func (m pickerModel) View() string {
 // "q" or Ctrl+C.
 func selectAndOpen(doer requestDoer, notifications []Notification) error {
 	if len(notifications) == 0 {
-		fmt.Println("No unread notifications")
+		fmt.Println("No notifications")
 		return nil
 	}
 

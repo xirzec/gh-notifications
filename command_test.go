@@ -139,7 +139,7 @@ func TestSaveHelpOnlyDocumentsSupportedFlags(t *testing.T) {
 	if err := runWithIO([]string{"save", "--help"}, strings.NewReader(""), &out); err != nil {
 		t.Fatalf("runWithIO: %v", err)
 	}
-	for _, want := range []string{"--tag value", "--yes", "--mark-read"} {
+	for _, want := range []string{"--tag value", "--yes", "--mark-read", "--unread-only"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("save help missing %q:\n%s", want, out.String())
 		}
@@ -191,7 +191,8 @@ func TestRunSaveAndList(t *testing.T) {
 		t.Fatalf("expected 1 query, got %d", len(queries))
 	}
 	q := queries[0]
-	if q.Repo != "o/r" || q.Type != "pr" || q.Action != "unsubscribe" || len(q.Tags) != 1 || q.Tags[0] != "cleanup" {
+	if q.Repo != "o/r" || q.Type != "pr" || q.Scope != savedQueryScopeAll ||
+		q.Action != "unsubscribe" || len(q.Tags) != 1 || q.Tags[0] != "cleanup" {
 		t.Errorf("saved query = %+v", q)
 	}
 
@@ -273,9 +274,24 @@ func TestRunSaveAcceptsQuotedMultiwordFilter(t *testing.T) {
 		t.Fatalf("expected 1 query, got %d", len(queries))
 	}
 	q := queries[0]
-	if q.Filter != "increment versions for" || !q.All || q.Action != "unsubscribe" ||
+	if q.Filter != "increment versions for" || q.Scope != savedQueryScopeAll || q.Action != "unsubscribe" ||
 		len(q.Tags) != 1 || q.Tags[0] != "cleanup" {
 		t.Errorf("saved query = %+v", q)
+	}
+}
+
+func TestRunSaveSupportsUnreadOnly(t *testing.T) {
+	withTempQueriesFile(t)
+	var out bytes.Buffer
+	if err := runSave([]string{"unread", "--unread-only"}, strings.NewReader(""), &out); err != nil {
+		t.Fatalf("runSave: %v", err)
+	}
+	queries, err := loadQueries()
+	if err != nil {
+		t.Fatalf("loadQueries: %v", err)
+	}
+	if len(queries) != 1 || queries[0].Scope != savedQueryScopeUnread {
+		t.Errorf("saved query = %+v", queries)
 	}
 }
 
@@ -285,11 +301,11 @@ func TestRunListQueriesFormatsMultiline(t *testing.T) {
 		{
 			Name:   "no-increment-versions",
 			Filter: "increment versions for",
-			All:    true,
+			Scope:  savedQueryScopeAll,
 			Action: "unsubscribe",
 			Tags:   []string{"cleanup"},
 		},
-		{Name: "triage", Repo: "octo-org/docs", State: "open"},
+		{Name: "triage", Repo: "octo-org/docs", State: "open", Scope: savedQueryScopeUnread},
 	}
 	if err := saveQueries(queries); err != nil {
 		t.Fatalf("saveQueries: %v", err)
@@ -301,11 +317,11 @@ func TestRunListQueriesFormatsMultiline(t *testing.T) {
 	}
 	const want = `no-increment-versions
   filter="increment versions for"
-  all
   action=unsubscribe
   tags=cleanup
 
 triage
+  scope=unread
   repo=octo-org/docs
   state=open
 `

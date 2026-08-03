@@ -153,7 +153,11 @@ func runListQueries(args []string, out io.Writer) error {
 			fmt.Fprintln(out)
 		}
 		fmt.Fprintln(out, q.Name)
-		for _, part := range q.descriptionParts() {
+		parts, err := q.descriptionParts()
+		if err != nil {
+			return err
+		}
+		for _, part := range parts {
 			fmt.Fprintf(out, "  %s\n", part)
 		}
 		if len(q.Tags) > 0 {
@@ -351,7 +355,10 @@ func runSavedQuery(args []string, in io.Reader, out io.Writer) error {
 // executeSavedQuery fetches and filters a saved query's notifications, then runs
 // its action, opens the picker (when --interactive), or prints the table.
 func executeSavedQuery(tracker *rateLimitTracker, q savedQuery, rf runFlags, in io.Reader, out io.Writer) error {
-	opts := q.toOptions()
+	opts, err := q.toOptions()
+	if err != nil {
+		return err
+	}
 	notifications, err := loadFilteredNotifications(tracker, opts)
 	if err != nil {
 		return err
