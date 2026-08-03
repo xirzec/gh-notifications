@@ -33,7 +33,7 @@ gh notifications <command> [args]
 ```
 
 Run `gh notifications --help` to see all flags and saved-query commands. Run with no flags to
-print your unread notifications:
+print all notifications, including ones already marked as read:
 
 ```bash
 gh notifications
@@ -52,7 +52,8 @@ The table columns are `REPOSITORY`, `TYPE`, `TITLE`, and `AGE` (a short relative
 
 | Flag | Description |
 | --- | --- |
-| `-a`, `--all` | Include notifications already marked as read (default: unread only) |
+| `-a`, `--all` | Include notifications already marked as read (the default; retained for compatibility) |
+| `--unread-only` | Show only notifications that have not been read |
 | `-R`, `--repo OWNER/REPO` | Limit to a single repository |
 | `-f`, `--filter TEXT` | Keep only notifications whose title contains `TEXT` (case-insensitive) |
 | `-t`, `--type TYPE` | Keep only a subject type: `issue`, `pr`, `commit`, `release`, `discussion`, … (friendly aliases accepted) |
@@ -68,12 +69,14 @@ The table columns are `REPOSITORY`, `TYPE`, `TITLE`, and `AGE` (a short relative
 | `-h`, `--help` | Show command help |
 
 Filters compose, so you can combine them freely.
+All notifications are included by default; add `--unread-only` to retain the previous unread-only
+behavior.
 
 ## Examples
 
 ```bash
 # Unread PRs in one repo
-gh notifications --repo cli/cli --type pr
+gh notifications --repo cli/cli --type pr --unread-only
 
 # Open issues mentioning "auth"
 gh notifications --type issue --state open --filter auth
@@ -149,6 +152,11 @@ Notes:
   `editor` config, or git's `core.editor`).
 - Saving over an existing name asks for confirmation first; pass `--yes` to overwrite without
   prompting.
+- New saved queries use `scope: all` by default; pass `--unread-only` to save `scope: unread`.
+  Legacy queries keep their prior behavior (`all: true` remains all; an omitted/false `all`
+  remains unread-only) and are rewritten with an explicit scope the next time queries are saved.
+- Quote filter text containing spaces (for example, `--filter "increment versions for"`).
+  Unexpected positional arguments are rejected before the query is saved.
 - `run --interactive` always opens the picker (it takes precedence over any saved action), so you
   can review before triaging by hand.
 - `--yes` enables unattended mutation — validate with `--dry-run` first, and prefer a throwaway

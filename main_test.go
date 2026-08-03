@@ -38,7 +38,7 @@ func TestRenderNotificationsEmpty(t *testing.T) {
 	if err := renderNotifications(&buf, nil, false, 80, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(buf.String(), "No unread notifications") {
+	if !strings.Contains(buf.String(), "No notifications") {
 		t.Errorf("expected empty message, got %q", buf.String())
 	}
 }
@@ -127,36 +127,50 @@ func TestParseArgs(t *testing.T) {
 }
 
 func TestNotificationsEndpoint(t *testing.T) {
-	if got := notificationsEndpoint(options{}); got != "notifications?per_page=50" {
-		t.Errorf("endpoint = %q, want %q", got, "notifications?per_page=50")
-	}
-	if got := notificationsEndpoint(options{repo: "octo/repo"}); got != "repos/octo/repo/notifications?per_page=50" {
-		t.Errorf("endpoint = %q, want %q", got, "repos/octo/repo/notifications?per_page=50")
-	}
-	if got := notificationsEndpoint(options{all: true}); got != "notifications?per_page=50&all=true" {
+	if got := notificationsEndpoint(options{}); got != "notifications?per_page=50&all=true" {
 		t.Errorf("endpoint = %q, want %q", got, "notifications?per_page=50&all=true")
 	}
-	if got := notificationsEndpoint(options{repo: "octo/repo", all: true}); got != "repos/octo/repo/notifications?per_page=50&all=true" {
+	if got := notificationsEndpoint(options{repo: "octo/repo"}); got != "repos/octo/repo/notifications?per_page=50&all=true" {
 		t.Errorf("endpoint = %q, want %q", got, "repos/octo/repo/notifications?per_page=50&all=true")
+	}
+	if got := notificationsEndpoint(options{unreadOnly: true}); got != "notifications?per_page=50" {
+		t.Errorf("endpoint = %q, want %q", got, "notifications?per_page=50")
+	}
+	if got := notificationsEndpoint(options{repo: "octo/repo", unreadOnly: true}); got != "repos/octo/repo/notifications?per_page=50" {
+		t.Errorf("endpoint = %q, want %q", got, "repos/octo/repo/notifications?per_page=50")
 	}
 }
 
-func TestParseArgsAll(t *testing.T) {
-	for _, arg := range []string{"-a", "--all"} {
-		opts, err := parseArgs([]string{arg})
-		if err != nil {
-			t.Fatalf("%s: unexpected error: %v", arg, err)
-		}
-		if !opts.all {
-			t.Errorf("%s: expected all to be true", arg)
-		}
+func TestParseArgsNotificationScope(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		unreadOnly bool
+	}{
+		{"default", nil, false},
+		{"legacy short all", []string{"-a"}, false},
+		{"legacy all", []string{"--all"}, false},
+		{"legacy all false", []string{"--all=false"}, true},
+		{"unread only", []string{"--unread-only"}, true},
+		{"unread only false", []string{"--unread-only=false"}, false},
+		{"last scope flag wins all", []string{"--unread-only", "--all"}, false},
+		{"last scope flag wins unread", []string{"--all", "--unread-only"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := parseArgs(tc.args)
+			if err != nil {
+				t.Fatalf("parseArgs(%v): %v", tc.args, err)
+			}
+			if opts.unreadOnly != tc.unreadOnly {
+				t.Errorf("unreadOnly = %v, want %v", opts.unreadOnly, tc.unreadOnly)
+			}
+		})
 	}
-	opts, err := parseArgs(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if opts.all {
-		t.Error("expected all to default to false")
+
+	for _, arg := range []string{"-a=invalid", "--all=invalid"} {
+		if _, err := parseArgs([]string{arg}); err == nil {
+			t.Errorf("%s: expected invalid boolean error", arg)
+		}
 	}
 }
 

@@ -47,8 +47,9 @@ type NotificationRepo struct {
 type options struct {
 	// repo, when set, limits notifications to a single OWNER/REPO.
 	repo string
-	// all, when true, includes notifications already marked as read.
-	all bool
+	// unreadOnly, when true, excludes notifications already marked as read.
+	// The zero value includes all notifications.
+	unreadOnly bool
 	// filter, when set, keeps only notifications whose title contains it
 	// (case-insensitive).
 	filter string
@@ -98,8 +99,17 @@ func (s *stringSliceFlag) Set(v string) error {
 func addFilterFlags(fs *flag.FlagSet, opts *options) {
 	fs.StringVar(&opts.repo, "repo", "", "Filter notifications by repository (OWNER/REPO)")
 	fs.StringVar(&opts.repo, "R", "", "Filter notifications by repository (OWNER/REPO) (shorthand)")
-	fs.BoolVar(&opts.all, "all", false, "Include notifications already marked as read")
-	fs.BoolVar(&opts.all, "a", false, "Include notifications already marked as read (shorthand)")
+	setAll := func(value string) error {
+		all, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		opts.unreadOnly = !all
+		return nil
+	}
+	fs.BoolFunc("all", "Include notifications already marked as read (default; retained for compatibility)", setAll)
+	fs.BoolFunc("a", "Include notifications already marked as read (shorthand; retained for compatibility)", setAll)
+	fs.BoolVar(&opts.unreadOnly, "unread-only", false, "Show only notifications that have not been read")
 	fs.StringVar(&opts.filter, "filter", "", "Keep only notifications whose title contains this text (case-insensitive)")
 	fs.StringVar(&opts.filter, "f", "", "Keep only notifications whose title contains this text (case-insensitive) (shorthand)")
 	fs.StringVar(&opts.itemType, "type", "", "Keep only notifications of this type (issue, pr, commit, release, discussion, ...)")
@@ -445,7 +455,7 @@ func notificationsEndpoint(opts options) string {
 		base = fmt.Sprintf("repos/%s/notifications", opts.repo)
 	}
 	endpoint := fmt.Sprintf("%s?per_page=%d", base, maxPerPage)
-	if opts.all {
+	if !opts.unreadOnly {
 		endpoint += "&all=true"
 	}
 	return endpoint
@@ -461,8 +471,8 @@ func findNextPage(resp *http.Response) (string, bool) {
 	return "", false
 }
 
-// fetchNotifications retrieves all unread notifications for the authenticated
-// user, following pagination until every page has been collected.
+// fetchNotifications retrieves notifications for the authenticated user,
+// following pagination until every page has been collected.
 func fetchNotifications(doer requestDoer, opts options) ([]Notification, error) {
 	var all []Notification
 	requestPath := notificationsEndpoint(opts)
@@ -505,7 +515,7 @@ func displayType(subjectType string) string {
 // column is included only when showReason is true.
 func renderNotifications(out io.Writer, notifications []Notification, isTTY bool, width int, showReason bool) error {
 	if len(notifications) == 0 {
-		_, err := fmt.Fprintln(out, "No unread notifications")
+		_, err := fmt.Fprintln(out, "No notifications")
 		return err
 	}
 

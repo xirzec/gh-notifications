@@ -139,7 +139,7 @@ func TestSaveHelpOnlyDocumentsSupportedFlags(t *testing.T) {
 	if err := runWithIO([]string{"save", "--help"}, strings.NewReader(""), &out); err != nil {
 		t.Fatalf("runWithIO: %v", err)
 	}
-	for _, want := range []string{"--tag value", "--yes", "--mark-read"} {
+	for _, want := range []string{"--tag value", "--yes", "--mark-read", "--unread-only"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("save help missing %q:\n%s", want, out.String())
 		}
@@ -191,7 +191,8 @@ func TestRunSaveAndList(t *testing.T) {
 		t.Fatalf("expected 1 query, got %d", len(queries))
 	}
 	q := queries[0]
-	if q.Repo != "o/r" || q.Type != "pr" || q.Action != "unsubscribe" || len(q.Tags) != 1 || q.Tags[0] != "cleanup" {
+	if q.Repo != "o/r" || q.Type != "pr" || q.Scope != savedQueryScopeAll ||
+		q.Action != "unsubscribe" || len(q.Tags) != 1 || q.Tags[0] != "cleanup" {
 		t.Errorf("saved query = %+v", q)
 	}
 
@@ -218,6 +219,114 @@ func TestRunSaveRequiresName(t *testing.T) {
 	var out bytes.Buffer
 	if err := runSave([]string{"--repo", "o/r"}, strings.NewReader(""), &out); err == nil {
 		t.Error("expected error when name is missing")
+	}
+}
+
+func TestRunSaveRejectsUnquotedMultiwordFilter(t *testing.T) {
+	withTempQueriesFile(t)
+	var out bytes.Buffer
+	err := runSave(
+		[]string{
+			"no-increment-versions",
+			"-f", "increment", "versions", "for",
+			"--all", "--unsubscribe", "--tag", "cleanup",
+		},
+		strings.NewReader(""),
+		&out,
+	)
+	if err == nil {
+		t.Fatal("expected an unquoted multiword filter to be rejected")
+	}
+	for _, want := range []string{
+		`unexpected arguments "versions for --all --unsubscribe --tag cleanup"`,
+		`--filter "increment versions for"`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+	if _, statErr := os.Stat(queriesFilePath()); !os.IsNotExist(statErr) {
+		t.Errorf("rejected save created the saved queries file; stat error = %v", statErr)
+	}
+}
+
+func TestRunSaveAcceptsQuotedMultiwordFilter(t *testing.T) {
+	withTempQueriesFile(t)
+	var out bytes.Buffer
+	err := runSave(
+		[]string{
+			"no-increment-versions",
+			"-f", "increment versions for",
+			"--all", "--unsubscribe", "--tag", "cleanup",
+		},
+		strings.NewReader(""),
+		&out,
+	)
+	if err != nil {
+		t.Fatalf("runSave: %v", err)
+	}
+
+	queries, err := loadQueries()
+	if err != nil {
+		t.Fatalf("loadQueries: %v", err)
+	}
+	if len(queries) != 1 {
+		t.Fatalf("expected 1 query, got %d", len(queries))
+	}
+	q := queries[0]
+	if q.Filter != "increment versions for" || q.Scope != savedQueryScopeAll || q.Action != "unsubscribe" ||
+		len(q.Tags) != 1 || q.Tags[0] != "cleanup" {
+		t.Errorf("saved query = %+v", q)
+	}
+}
+
+func TestRunSaveSupportsUnreadOnly(t *testing.T) {
+	withTempQueriesFile(t)
+	var out bytes.Buffer
+	if err := runSave([]string{"unread", "--unread-only"}, strings.NewReader(""), &out); err != nil {
+		t.Fatalf("runSave: %v", err)
+	}
+	queries, err := loadQueries()
+	if err != nil {
+		t.Fatalf("loadQueries: %v", err)
+	}
+	if len(queries) != 1 || queries[0].Scope != savedQueryScopeUnread {
+		t.Errorf("saved query = %+v", queries)
+	}
+}
+
+func TestRunListQueriesFormatsMultiline(t *testing.T) {
+	withTempQueriesFile(t)
+	queries := []savedQuery{
+		{
+			Name:   "no-increment-versions",
+			Filter: "increment versions for",
+			Scope:  savedQueryScopeAll,
+			Action: "unsubscribe",
+			Tags:   []string{"cleanup"},
+		},
+		{Name: "triage", Repo: "octo-org/docs", State: "open", Scope: savedQueryScopeUnread},
+	}
+	if err := saveQueries(queries); err != nil {
+		t.Fatalf("saveQueries: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := runListQueries(nil, &out); err != nil {
+		t.Fatalf("runListQueries: %v", err)
+	}
+	const want = `no-increment-versions
+  filter="increment versions for"
+  action=unsubscribe
+  tags=cleanup
+
+triage
+  scope=unread
+  repo=octo-org/docs
+  state=open
+`
+	if out.String() != want {
+		t.Errorf("list output:\n%s\nwant:\n%s", out.String(), want)
 	}
 }
 
