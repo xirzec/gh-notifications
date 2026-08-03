@@ -88,6 +88,12 @@ func runSave(args []string, in io.Reader, out io.Writer) error {
 	if name == "" {
 		return fmt.Errorf("save requires a query name: gh notifications save <name> [flags]")
 	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf(
+			"unexpected arguments %q; quote filter text containing spaces (for example, --filter \"increment versions for\")",
+			strings.Join(fs.Args(), " "),
+		)
+	}
 	if err := validateOptions(opts); err != nil {
 		return err
 	}
@@ -142,12 +148,17 @@ func runListQueries(args []string, out io.Writer) error {
 		fmt.Fprintln(out, "No saved queries")
 		return nil
 	}
-	for _, q := range queries {
-		fmt.Fprintf(out, "%s\t%s", q.Name, q.describe())
-		if len(q.Tags) > 0 {
-			fmt.Fprintf(out, "  tags=%s", strings.Join(q.Tags, ","))
+	for i, q := range queries {
+		if i > 0 {
+			fmt.Fprintln(out)
 		}
-		fmt.Fprintln(out)
+		fmt.Fprintln(out, q.Name)
+		for _, part := range q.descriptionParts() {
+			fmt.Fprintf(out, "  %s\n", part)
+		}
+		if len(q.Tags) > 0 {
+			fmt.Fprintf(out, "  tags=%s\n", strings.Join(q.Tags, ","))
+		}
 	}
 	return nil
 }

@@ -221,6 +221,99 @@ func TestRunSaveRequiresName(t *testing.T) {
 	}
 }
 
+func TestRunSaveRejectsUnquotedMultiwordFilter(t *testing.T) {
+	withTempQueriesFile(t)
+	var out bytes.Buffer
+	err := runSave(
+		[]string{
+			"no-increment-versions",
+			"-f", "increment", "versions", "for",
+			"--all", "--unsubscribe", "--tag", "cleanup",
+		},
+		strings.NewReader(""),
+		&out,
+	)
+	if err == nil {
+		t.Fatal("expected an unquoted multiword filter to be rejected")
+	}
+	for _, want := range []string{
+		`unexpected arguments "versions for --all --unsubscribe --tag cleanup"`,
+		`--filter "increment versions for"`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+	if _, statErr := os.Stat(queriesFilePath()); !os.IsNotExist(statErr) {
+		t.Errorf("rejected save created the saved queries file; stat error = %v", statErr)
+	}
+}
+
+func TestRunSaveAcceptsQuotedMultiwordFilter(t *testing.T) {
+	withTempQueriesFile(t)
+	var out bytes.Buffer
+	err := runSave(
+		[]string{
+			"no-increment-versions",
+			"-f", "increment versions for",
+			"--all", "--unsubscribe", "--tag", "cleanup",
+		},
+		strings.NewReader(""),
+		&out,
+	)
+	if err != nil {
+		t.Fatalf("runSave: %v", err)
+	}
+
+	queries, err := loadQueries()
+	if err != nil {
+		t.Fatalf("loadQueries: %v", err)
+	}
+	if len(queries) != 1 {
+		t.Fatalf("expected 1 query, got %d", len(queries))
+	}
+	q := queries[0]
+	if q.Filter != "increment versions for" || !q.All || q.Action != "unsubscribe" ||
+		len(q.Tags) != 1 || q.Tags[0] != "cleanup" {
+		t.Errorf("saved query = %+v", q)
+	}
+}
+
+func TestRunListQueriesFormatsMultiline(t *testing.T) {
+	withTempQueriesFile(t)
+	queries := []savedQuery{
+		{
+			Name:   "no-increment-versions",
+			Filter: "increment versions for",
+			All:    true,
+			Action: "unsubscribe",
+			Tags:   []string{"cleanup"},
+		},
+		{Name: "triage", Repo: "octo-org/docs", State: "open"},
+	}
+	if err := saveQueries(queries); err != nil {
+		t.Fatalf("saveQueries: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := runListQueries(nil, &out); err != nil {
+		t.Fatalf("runListQueries: %v", err)
+	}
+	const want = `no-increment-versions
+  filter="increment versions for"
+  all
+  action=unsubscribe
+  tags=cleanup
+
+triage
+  repo=octo-org/docs
+  state=open
+`
+	if out.String() != want {
+		t.Errorf("list output:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
+
 func TestRunSaveOverwriteConfirmed(t *testing.T) {
 	withTempQueriesFile(t)
 	if err := saveQueries([]savedQuery{{Name: "dup", Repo: "old/repo"}}); err != nil {

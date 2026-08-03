@@ -236,6 +236,9 @@ gh notifications save <name> [--repo R] [--filter T] [--type T] [--state S] \
 
 - Captures the given filter flags and an optional action under `<name>`
 - `<name>` must be the first argument (`save <name> [flags]`)
+- Filter text containing spaces must be shell-quoted; unexpected positional arguments fail the
+  command before anything is saved rather than silently truncating the filter or ignoring later
+  flags
 - `--tag` is repeatable; tags let related queries be run together (see below)
 - Saving over an existing name asks for a `[y/N]` confirmation before overwriting (reports
   `Updated query` instead of `Saved query`); pass `--yes`/`-y` to skip the prompt
@@ -246,7 +249,8 @@ gh notifications save <name> [--repo R] [--filter T] [--type T] [--state S] \
 gh notifications list
 ```
 
-- Prints each saved query's name, a summary of its filters/action, and its tags
+- Prints each saved query's name followed by its filters, action, and tags on indented lines;
+  filter text is quoted to make its boundaries clear
 - Prints `No saved queries` when none are stored
 
 #### Running a saved query

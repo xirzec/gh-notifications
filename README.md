@@ -149,6 +149,8 @@ Notes:
   `editor` config, or git's `core.editor`).
 - Saving over an existing name asks for confirmation first; pass `--yes` to overwrite without
   prompting.
+- Quote filter text containing spaces (for example, `--filter "increment versions for"`).
+  Unexpected positional arguments are rejected before the query is saved.
 - `run --interactive` always opens the picker (it takes precedence over any saved action), so you
   can review before triaging by hand.
 - `--yes` enables unattended mutation — validate with `--dry-run` first, and prefer a throwaway

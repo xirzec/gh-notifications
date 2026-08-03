@@ -182,15 +182,15 @@ func (q savedQuery) toOptions() options {
 	return opts
 }
 
-// describe returns a one-line human-readable summary of the query's filters and
-// action for listing.
-func (q savedQuery) describe() string {
+// descriptionParts returns the query's filters and action as independently
+// renderable fields.
+func (q savedQuery) descriptionParts() []string {
 	var parts []string
 	if q.Repo != "" {
 		parts = append(parts, "repo="+q.Repo)
 	}
 	if q.Filter != "" {
-		parts = append(parts, "filter="+q.Filter)
+		parts = append(parts, fmt.Sprintf("filter=%q", q.Filter))
 	}
 	if q.Type != "" {
 		parts = append(parts, "type="+q.Type)
@@ -208,7 +208,7 @@ func (q savedQuery) describe() string {
 		parts = append(parts, "action="+q.Action)
 	}
 	if len(parts) == 0 {
-		return "(no filters)"
+		return []string{"(no filters)"}
 	}
-	return strings.Join(parts, " ")
+	return parts
 }
