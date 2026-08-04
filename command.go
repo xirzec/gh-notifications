@@ -63,7 +63,7 @@ func extractName(args []string) (name string, rest []string) {
 // before overwriting, unless --yes is given.
 func newSaveFlagSet(opts *options) (*flag.FlagSet, *stringSliceFlag) {
 	fs := flag.NewFlagSet("gh-notifications save", flag.ContinueOnError)
-	addFilterFlags(fs, opts)
+	addSavedQueryFilterFlags(fs, opts)
 	addActionFlags(fs, opts)
 	addAssumeYesFlags(fs, opts)
 	var tags stringSliceFlag
@@ -334,6 +334,12 @@ func runSavedQuery(args []string, in io.Reader, out io.Writer) error {
 		}
 	}
 
+	for _, q := range targets {
+		if err := validateSavedQuery(q); err != nil {
+			return err
+		}
+	}
+
 	client, err := api.DefaultRESTClient()
 	if err != nil {
 		return err
@@ -352,9 +358,30 @@ func runSavedQuery(args []string, in io.Reader, out io.Writer) error {
 	return nil
 }
 
+func validateSavedQuery(q savedQuery) error {
+	legacyAll, err := q.legacyAllSetting()
+	if err != nil {
+		return fmt.Errorf("invalid saved query %q: %w", q.Name, err)
+	}
+	if legacyAll != "" {
+		return fmt.Errorf("saved query %q contains legacy %s; remove that setting with \"gh notifications edit\" before running it", q.Name, legacyAll)
+	}
+	opts, err := q.toOptions()
+	if err != nil {
+		return fmt.Errorf("invalid saved query %q: %w", q.Name, err)
+	}
+	if err := validateOptions(opts); err != nil {
+		return fmt.Errorf("invalid saved query %q: %w", q.Name, err)
+	}
+	return nil
+}
+
 // executeSavedQuery fetches and filters a saved query's notifications, then runs
 // its action, opens the picker (when --interactive), or prints the table.
 func executeSavedQuery(tracker *rateLimitTracker, q savedQuery, rf runFlags, in io.Reader, out io.Writer) error {
+	if err := validateSavedQuery(q); err != nil {
+		return err
+	}
 	opts, err := q.toOptions()
 	if err != nil {
 		return err

@@ -260,3 +260,12 @@ func TestParseArgsMutationConflict(t *testing.T) {
 		}
 	}
 }
+
+func TestParseArgsAllMutationConflict(t *testing.T) {
+	for _, action := range []string{"--mark-read", "--mark-done", "--unsubscribe"} {
+		_, err := parseArgs([]string{"--all", action})
+		if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+			t.Errorf("parseArgs([--all %s]) error = %v, want --all conflict", action, err)
+		}
+	}
+}

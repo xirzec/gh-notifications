@@ -43,13 +43,13 @@ GitHub GraphQL API quota: 4998/5000 remaining, resets at 16:41:55
 
 ### List Notifications
 
-Display the user's notifications, including ones already marked as read.
+Display the user's unread notifications.
 
 ```
 gh notifications
 ```
 
-- Shows all notifications for the authenticated user (`GET /notifications?all=true`)
+- Shows unread notifications for the authenticated user (`GET /notifications`)
 - Displays a table with columns: `REPOSITORY`, `TYPE`, `TITLE`, `AGE`
 - `TYPE` is the subject type (`PullRequest` is shown as `PR`)
 - The `REASON` column is hidden by default; pass `--show-reason` to include it
@@ -58,16 +58,20 @@ gh notifications
 - Automatically pages through all results (API returns at most 50 per page) so the full list is shown
 - Prints `No notifications` when there are none
 
-#### Showing only unread notifications
+#### Searching notification history
 
 ```
-gh notifications --unread-only
+gh notifications --all
+gh notifications -a
 ```
 
-- By default read and unread notifications are shown; `--unread-only` omits `all=true` from the
-  request so the API returns only unread notifications
-- `--all`/`-a` are retained as compatibility aliases for the default behavior
-- Composable with `--repo` and the other filters
+- By default only unread notifications are shown
+- `--all` adds `all=true` to the request, which returns unread, read, and done/archived threads
+  without exposing which read threads remain in the inbox
+- Intended only for ad-hoc listing or interactive browsing, such as finding a notification that was
+  already acted on
+- Cannot be combined with `--mark-read`, `--mark-done`, or `--unsubscribe`, and cannot be stored in
+  a saved query
 
 #### Filtering by repository
 
@@ -186,6 +190,7 @@ gh notifications --mark-done --dry-run
 - Marks each thread as done via `DELETE /notifications/threads/{thread_id}`, removing it from the inbox entirely (unlike `--mark-read`, which only clears the unread flag)
 - Same confirmation and `--dry-run` safety behavior as `--mark-read`
 - `--mark-read` and `--mark-done` cannot be combined
+- Mutating actions cannot be combined with `--all`
 
 ### Unsubscribe from Notifications
 
@@ -201,16 +206,17 @@ gh notifications --unsubscribe --dry-run
 - For each thread, deletes the subscription via `DELETE /notifications/threads/{thread_id}/subscription` and then marks it done via `DELETE /notifications/threads/{thread_id}` — matching the GitHub web "Unsubscribe" action, which also removes the thread from the inbox
 - Same confirmation and `--dry-run` safety behavior as the mark commands
 - Only one of `--mark-read`, `--mark-done`, or `--unsubscribe` may be used at a time
+- Mutating actions cannot be combined with `--all`
 
 ### Saved Queries
 
 Persist a named set of filters (and an optional action and tags) so they can be re-run later,
 interactively or unattended.
 
-A saved query is **unified**: it stores the same filters as the listing command plus an optional
-mutating action (`read`, `done`, or `unsubscribe`) and any number of free-form tags. Queries are
-managed with subcommands and use the same all-by-default notification scope as the bare
-`gh notifications [flags]` command.
+A saved query stores reusable unread-notification filters plus an optional mutating action (`read`,
+`done`, or `unsubscribe`) and any number of free-form tags. The ad-hoc `--all` history search is
+intentionally excluded. Queries are managed with subcommands; the bare `gh notifications [flags]`
+listing behavior is unchanged.
 
 #### Storage
 
@@ -223,7 +229,6 @@ managed with subcommands and use the same all-by-default notification scope as t
 ```yaml
 queries:
   - name: cleanup-bot-prs
-    scope: all              # all | unread
     repo: owner/repo
     type: pr
     action: unsubscribe   # "" | read | done | unsubscribe
@@ -234,15 +239,11 @@ queries:
 
 ```
 gh notifications save <name> [--repo R] [--filter T] [--type T] [--state S] \
-    [--draft] [--unread-only] [--mark-read|--mark-done|--unsubscribe] [--tag t1 --tag t2]
+    [--draft] [--mark-read|--mark-done|--unsubscribe] [--tag t1 --tag t2]
 ```
 
 - Captures the given filter flags and an optional action under `<name>`
-- New queries default to `scope: all`; `--unread-only` stores `scope: unread`
-- Legacy queries preserve their previous behavior: `all: true` becomes `scope: all`, while an
-  omitted or false `all` becomes `scope: unread`. The legacy field is replaced with explicit
-  scope values the next time the query file is written
-- `--all`/`-a` remain accepted for compatibility with existing commands
+- Does not accept `--all`; saved queries always fetch unread notifications
 - `<name>` must be the first argument (`save <name> [flags]`)
 - Filter text containing spaces must be shell-quoted; unexpected positional arguments fail the
   command before anything is saved rather than silently truncating the filter or ignoring later
@@ -250,6 +251,8 @@ gh notifications save <name> [--repo R] [--filter T] [--type T] [--state S] \
 - `--tag` is repeatable; tags let related queries be run together (see below)
 - Saving over an existing name asks for a `[y/N]` confirmation before overwriting (reports
   `Updated query` instead of `Saved query`); pass `--yes`/`-y` to skip the prompt
+- Legacy YAML entries containing `all: true` or `scope: all` fail before making API calls and direct
+  the user to remove the setting with `gh notifications edit`
 
 #### Listing saved queries
 
@@ -257,9 +260,9 @@ gh notifications save <name> [--repo R] [--filter T] [--type T] [--state S] \
 gh notifications list
 ```
 
-- Prints each saved query's name followed by its scope, filters, action, and tags on indented
-  lines; the default `scope: all` is omitted, while the `scope: unread` opt-out is shown. Filter
-  text is quoted to make its boundaries clear
+- Prints each saved query's name followed by its filters, action, and tags on indented lines;
+  filter text is quoted to make its boundaries clear
+- Legacy all-history settings are labeled unsupported so they can be removed before running
 - Prints `No saved queries` when none are stored
 
 #### Running a saved query
