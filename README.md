@@ -16,6 +16,8 @@ To upgrade later:
 gh extension upgrade notifications
 ```
 
+See the [changelog](CHANGELOG.md) for release notes and migration guidance.
+
 ### Build from source
 
 ```bash
