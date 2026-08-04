@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -139,12 +140,12 @@ func TestSaveHelpOnlyDocumentsSupportedFlags(t *testing.T) {
 	if err := runWithIO([]string{"save", "--help"}, strings.NewReader(""), &out); err != nil {
 		t.Fatalf("runWithIO: %v", err)
 	}
-	for _, want := range []string{"--tag value", "--yes", "--mark-read", "--unread-only"} {
+	for _, want := range []string{"--tag value", "--yes", "--mark-read"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("save help missing %q:\n%s", want, out.String())
 		}
 	}
-	for _, unwanted := range []string{"--dry-run", "--interactive", "--show-reason"} {
+	for _, unwanted := range []string{"--all", "--dry-run", "--interactive", "--show-reason", "--unread-only"} {
 		if strings.Contains(out.String(), unwanted) {
 			t.Errorf("save help unexpectedly contains %q:\n%s", unwanted, out.String())
 		}
@@ -161,7 +162,7 @@ func TestCommandFlagSetsRejectUnsupportedNoOpFlags(t *testing.T) {
 		}
 	})
 
-	for _, arg := range []string{"--dry-run", "--interactive", "--show-reason"} {
+	for _, arg := range []string{"--all", "--dry-run", "--interactive", "--show-reason", "--unread-only"} {
 		t.Run("save rejects "+arg, func(t *testing.T) {
 			var opts options
 			fs, _ := newSaveFlagSet(&opts)
@@ -191,7 +192,7 @@ func TestRunSaveAndList(t *testing.T) {
 		t.Fatalf("expected 1 query, got %d", len(queries))
 	}
 	q := queries[0]
-	if q.Repo != "o/r" || q.Type != "pr" || q.Scope != savedQueryScopeAll ||
+	if q.Repo != "o/r" || q.Type != "pr" || q.Scope != "" || q.All ||
 		q.Action != "unsubscribe" || len(q.Tags) != 1 || q.Tags[0] != "cleanup" {
 		t.Errorf("saved query = %+v", q)
 	}
@@ -219,6 +220,44 @@ func TestRunSaveRequiresName(t *testing.T) {
 	var out bytes.Buffer
 	if err := runSave([]string{"--repo", "o/r"}, strings.NewReader(""), &out); err == nil {
 		t.Error("expected error when name is missing")
+	}
+}
+
+func TestRunSaveRejectsAll(t *testing.T) {
+	withTempQueriesFile(t)
+	err := runSave(
+		[]string{"cleanup", "--all"},
+		strings.NewReader(""),
+		io.Discard,
+	)
+	if err == nil || !strings.Contains(err.Error(), "flag provided but not defined: -all") {
+		t.Fatalf("runSave error = %v, want unsupported --all error", err)
+	}
+	if _, statErr := os.Stat(queriesFilePath()); !os.IsNotExist(statErr) {
+		t.Errorf("rejected save created the saved queries file; stat error = %v", statErr)
+	}
+}
+
+func TestRunSaveOverwritesLegacyAll(t *testing.T) {
+	withTempQueriesFile(t)
+	if err := saveQueries([]savedQuery{{Name: "legacy", All: true}}); err != nil {
+		t.Fatalf("saveQueries: %v", err)
+	}
+
+	if err := runSave(
+		[]string{"legacy", "--repo", "o/r", "--yes"},
+		strings.NewReader(""),
+		io.Discard,
+	); err != nil {
+		t.Fatalf("runSave: %v", err)
+	}
+
+	queries, err := loadQueries()
+	if err != nil {
+		t.Fatalf("loadQueries: %v", err)
+	}
+	if len(queries) != 1 || queries[0].All || queries[0].Repo != "o/r" {
+		t.Fatalf("updated query = %+v, want legacy all removed", queries)
 	}
 }
 
@@ -257,7 +296,7 @@ func TestRunSaveAcceptsQuotedMultiwordFilter(t *testing.T) {
 		[]string{
 			"no-increment-versions",
 			"-f", "increment versions for",
-			"--all", "--unsubscribe", "--tag", "cleanup",
+			"--unsubscribe", "--tag", "cleanup",
 		},
 		strings.NewReader(""),
 		&out,
@@ -274,24 +313,9 @@ func TestRunSaveAcceptsQuotedMultiwordFilter(t *testing.T) {
 		t.Fatalf("expected 1 query, got %d", len(queries))
 	}
 	q := queries[0]
-	if q.Filter != "increment versions for" || q.Scope != savedQueryScopeAll || q.Action != "unsubscribe" ||
+	if q.Filter != "increment versions for" || q.Scope != "" || q.All || q.Action != "unsubscribe" ||
 		len(q.Tags) != 1 || q.Tags[0] != "cleanup" {
 		t.Errorf("saved query = %+v", q)
-	}
-}
-
-func TestRunSaveSupportsUnreadOnly(t *testing.T) {
-	withTempQueriesFile(t)
-	var out bytes.Buffer
-	if err := runSave([]string{"unread", "--unread-only"}, strings.NewReader(""), &out); err != nil {
-		t.Fatalf("runSave: %v", err)
-	}
-	queries, err := loadQueries()
-	if err != nil {
-		t.Fatalf("loadQueries: %v", err)
-	}
-	if len(queries) != 1 || queries[0].Scope != savedQueryScopeUnread {
-		t.Errorf("saved query = %+v", queries)
 	}
 }
 
@@ -301,7 +325,7 @@ func TestRunListQueriesFormatsMultiline(t *testing.T) {
 		{
 			Name:   "no-increment-versions",
 			Filter: "increment versions for",
-			Scope:  savedQueryScopeAll,
+			All:    true,
 			Action: "unsubscribe",
 			Tags:   []string{"cleanup"},
 		},
@@ -316,12 +340,12 @@ func TestRunListQueriesFormatsMultiline(t *testing.T) {
 		t.Fatalf("runListQueries: %v", err)
 	}
 	const want = `no-increment-versions
+  all: true (unsupported; remove before running)
   filter="increment versions for"
   action=unsubscribe
   tags=cleanup
 
 triage
-  scope=unread
   repo=octo-org/docs
   state=open
 `
@@ -477,6 +501,38 @@ func TestRunSavedQueryTagNoMatches(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "No saved queries match") {
 		t.Errorf("unexpected output %q", out.String())
+	}
+}
+
+func TestRunSavedQueryRejectsLegacyAll(t *testing.T) {
+	for _, query := range []savedQuery{
+		{Name: "legacy", All: true},
+		{Name: "legacy", Scope: savedQueryScopeAll},
+	} {
+		t.Run(query.Scope+fmt.Sprint(query.All), func(t *testing.T) {
+			withTempQueriesFile(t)
+			if err := saveQueries([]savedQuery{query}); err != nil {
+				t.Fatalf("saveQueries: %v", err)
+			}
+
+			err := runSavedQuery([]string{"legacy"}, strings.NewReader(""), io.Discard)
+			if err == nil || !strings.Contains(err.Error(), `saved query "legacy" contains legacy`) {
+				t.Fatalf("runSavedQuery error = %v, want legacy all error", err)
+			}
+		})
+	}
+}
+
+func TestExecuteSavedQueryRejectsLegacyAll(t *testing.T) {
+	err := executeSavedQuery(
+		nil,
+		savedQuery{Name: "cleanup", All: true},
+		runFlags{},
+		strings.NewReader(""),
+		io.Discard,
+	)
+	if err == nil || !strings.Contains(err.Error(), `saved query "cleanup" contains legacy all: true`) {
+		t.Fatalf("executeSavedQuery error = %v, want legacy all error", err)
 	}
 }
 

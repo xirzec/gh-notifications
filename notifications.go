@@ -47,9 +47,9 @@ type NotificationRepo struct {
 type options struct {
 	// repo, when set, limits notifications to a single OWNER/REPO.
 	repo string
-	// unreadOnly, when true, excludes notifications already marked as read.
-	// The zero value includes all notifications.
-	unreadOnly bool
+	// all, when true, searches notification history, including read and done
+	// threads. It is limited to ad-hoc listing and interactive browsing.
+	all bool
 	// filter, when set, keeps only notifications whose title contains it
 	// (case-insensitive).
 	filter string
@@ -96,26 +96,21 @@ func (s *stringSliceFlag) Set(v string) error {
 	return nil
 }
 
-func addFilterFlags(fs *flag.FlagSet, opts *options) {
+func addSavedQueryFilterFlags(fs *flag.FlagSet, opts *options) {
 	fs.StringVar(&opts.repo, "repo", "", "Filter notifications by repository (OWNER/REPO)")
 	fs.StringVar(&opts.repo, "R", "", "Filter notifications by repository (OWNER/REPO) (shorthand)")
-	setAll := func(value string) error {
-		all, err := strconv.ParseBool(value)
-		if err != nil {
-			return err
-		}
-		opts.unreadOnly = !all
-		return nil
-	}
-	fs.BoolFunc("all", "Include notifications already marked as read (default; retained for compatibility)", setAll)
-	fs.BoolFunc("a", "Include notifications already marked as read (shorthand; retained for compatibility)", setAll)
-	fs.BoolVar(&opts.unreadOnly, "unread-only", false, "Show only notifications that have not been read")
 	fs.StringVar(&opts.filter, "filter", "", "Keep only notifications whose title contains this text (case-insensitive)")
 	fs.StringVar(&opts.filter, "f", "", "Keep only notifications whose title contains this text (case-insensitive) (shorthand)")
 	fs.StringVar(&opts.itemType, "type", "", "Keep only notifications of this type (issue, pr, commit, release, discussion, ...)")
 	fs.StringVar(&opts.itemType, "t", "", "Keep only notifications of this type (shorthand)")
 	fs.StringVar(&opts.state, "state", "", "Keep only issues/PRs in this state (open, closed, merged, not-planned, completed); closed excludes merged PRs")
 	fs.BoolVar(&opts.draft, "draft", false, "Keep only draft pull requests")
+}
+
+func addFilterFlags(fs *flag.FlagSet, opts *options) {
+	addSavedQueryFilterFlags(fs, opts)
+	fs.BoolVar(&opts.all, "all", false, "Search notification history, including read and done threads (listing/picker only)")
+	fs.BoolVar(&opts.all, "a", false, "Search notification history, including read and done threads (listing/picker only; shorthand)")
 }
 
 func addActionFlags(fs *flag.FlagSet, opts *options) {
@@ -164,6 +159,9 @@ func validateOptions(opts options) error {
 	}
 	if mutations > 1 {
 		return fmt.Errorf("only one of --mark-read, --mark-done, or --unsubscribe may be used at a time")
+	}
+	if opts.all && mutations > 0 {
+		return fmt.Errorf("--all is for ad-hoc listing or interactive browsing and cannot be combined with --mark-read, --mark-done, or --unsubscribe")
 	}
 	return nil
 }
@@ -455,7 +453,7 @@ func notificationsEndpoint(opts options) string {
 		base = fmt.Sprintf("repos/%s/notifications", opts.repo)
 	}
 	endpoint := fmt.Sprintf("%s?per_page=%d", base, maxPerPage)
-	if !opts.unreadOnly {
+	if opts.all {
 		endpoint += "&all=true"
 	}
 	return endpoint

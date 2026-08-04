@@ -16,6 +16,8 @@ To upgrade later:
 gh extension upgrade notifications
 ```
 
+See the [changelog](CHANGELOG.md) for release notes and migration guidance.
+
 ### Build from source
 
 ```bash
@@ -33,7 +35,7 @@ gh notifications <command> [args]
 ```
 
 Run `gh notifications --help` to see all flags and saved-query commands. Run with no flags to
-print all notifications, including ones already marked as read:
+print unread notifications:
 
 ```bash
 gh notifications
@@ -52,8 +54,7 @@ The table columns are `REPOSITORY`, `TYPE`, `TITLE`, and `AGE` (a short relative
 
 | Flag | Description |
 | --- | --- |
-| `-a`, `--all` | Include notifications already marked as read (the default; retained for compatibility) |
-| `--unread-only` | Show only notifications that have not been read |
+| `-a`, `--all` | Search notification history, including read and done threads (ad-hoc listing/picker only) |
 | `-R`, `--repo OWNER/REPO` | Limit to a single repository |
 | `-f`, `--filter TEXT` | Keep only notifications whose title contains `TEXT` (case-insensitive) |
 | `-t`, `--type TYPE` | Keep only a subject type: `issue`, `pr`, `commit`, `release`, `discussion`, … (friendly aliases accepted) |
@@ -68,15 +69,15 @@ The table columns are `REPOSITORY`, `TYPE`, `TITLE`, and `AGE` (a short relative
 | `-y`, `--yes` | Skip the confirmation prompt for mutating commands (for unattended runs) |
 | `-h`, `--help` | Show command help |
 
-Filters compose, so you can combine them freely.
-All notifications are included by default; add `--unread-only` to retain the previous unread-only
-behavior.
+Filters compose, except that `--all` cannot be combined with a mutating action or stored in a saved
+query. GitHub's REST API returns unread, read, and done threads when `all=true` without exposing
+which read threads are still in the inbox, so `--all` is only suitable for ad-hoc searching.
 
 ## Examples
 
 ```bash
 # Unread PRs in one repo
-gh notifications --repo cli/cli --type pr --unread-only
+gh notifications --repo cli/cli --type pr
 
 # Open issues mentioning "auth"
 gh notifications --type issue --state open --filter auth
@@ -109,7 +110,8 @@ with `--dry-run` to preview without making API calls.
 - **`--unsubscribe`** — deletes the thread subscription and marks it done, matching the GitHub web
   "Unsubscribe" behavior.
 
-Only one mutating action may be used at a time.
+Only one mutating action may be used at a time, and mutating actions cannot be combined with
+`--all`.
 
 ## Saved queries
 
@@ -150,11 +152,10 @@ Notes:
   `%AppData%\GitHub CLI\`, on macOS/Linux `~/.config/gh/`. The file is human-editable — use
   `gh notifications edit` to open it in your editor (resolved via `GH_EDITOR`/`EDITOR`, the `gh`
   `editor` config, or git's `core.editor`).
+- Saved queries always operate on unread notifications. Legacy queries containing `all: true` or
+  `scope: all` fail when run; remove that setting with `gh notifications edit`.
 - Saving over an existing name asks for confirmation first; pass `--yes` to overwrite without
   prompting.
-- New saved queries use `scope: all` by default; pass `--unread-only` to save `scope: unread`.
-  Legacy queries keep their prior behavior (`all: true` remains all; an omitted/false `all`
-  remains unread-only) and are rewritten with an explicit scope the next time queries are saved.
 - Quote filter text containing spaces (for example, `--filter "increment versions for"`).
   Unexpected positional arguments are rejected before the query is saved.
 - `run --interactive` always opens the picker (it takes precedence over any saved action), so you

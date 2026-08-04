@@ -12,6 +12,7 @@ import (
 )
 
 const (
+	// Retained only to recognize saved-query files written by older versions.
 	savedQueryScopeAll    = "all"
 	savedQueryScopeUnread = "unread"
 )
@@ -20,10 +21,10 @@ const (
 // mutating action and free-form tags. It is the on-disk representation of a
 // reusable query.
 type savedQuery struct {
-	Name  string `yaml:"name"`
-	Scope string `yaml:"scope,omitempty"`
-	// All is retained only to read saved queries written before scope was
-	// explicit. New writes normalize it into Scope.
+	Name string `yaml:"name"`
+	// Scope and All are retained only to detect history-search settings written
+	// by older versions. New saved queries omit both.
+	Scope  string `yaml:"scope,omitempty"`
 	All    bool   `yaml:"all,omitempty"`
 	Repo   string `yaml:"repo,omitempty"`
 	Filter string `yaml:"filter,omitempty"`
@@ -61,11 +62,10 @@ func loadQueries() ([]savedQuery, error) {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
-	queries, err := normalizeSavedQueries(doc.Queries)
-	if err != nil {
+	if err := validateSavedQuerySchemas(doc.Queries); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
-	return queries, nil
+	return doc.Queries, nil
 }
 
 // saveQueries writes the given queries to disk, creating the config directory if
@@ -75,11 +75,10 @@ func saveQueries(queries []savedQuery) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
-	normalized, err := normalizeSavedQueries(queries)
-	if err != nil {
+	if err := validateSavedQuerySchemas(queries); err != nil {
 		return fmt.Errorf("validating queries: %w", err)
 	}
-	data, err := yaml.Marshal(queriesDoc{Queries: normalized})
+	data, err := yaml.Marshal(queriesDoc{Queries: queries})
 	if err != nil {
 		return fmt.Errorf("encoding queries: %w", err)
 	}
@@ -89,40 +88,32 @@ func saveQueries(queries []savedQuery) error {
 	return nil
 }
 
-// notificationScope resolves the explicit scope or its legacy `all` equivalent.
-// A legacy query without `all: true` remains unread-only so upgrading cannot
-// silently widen an existing saved action.
-func (q savedQuery) notificationScope() (string, error) {
+// legacyAllSetting returns the setting that makes an older saved query search
+// all notification history. Empty and unread scopes use the current unread-only
+// behavior.
+func (q savedQuery) legacyAllSetting() (string, error) {
 	scope := strings.ToLower(strings.TrimSpace(q.Scope))
-	if scope != "" {
-		if q.All {
-			return "", fmt.Errorf("query %q sets both scope and legacy all", q.Name)
-		}
-		switch scope {
-		case savedQueryScopeAll, savedQueryScopeUnread:
-			return scope, nil
-		default:
-			return "", fmt.Errorf("query %q has invalid scope %q: expected all or unread", q.Name, q.Scope)
-		}
+	switch scope {
+	case "", savedQueryScopeUnread, savedQueryScopeAll:
+	default:
+		return "", fmt.Errorf("query %q has invalid legacy scope %q: expected all or unread", q.Name, q.Scope)
 	}
 	if q.All {
-		return savedQueryScopeAll, nil
+		return "all: true", nil
 	}
-	return savedQueryScopeUnread, nil
+	if scope == savedQueryScopeAll {
+		return "scope: all", nil
+	}
+	return "", nil
 }
 
-func normalizeSavedQueries(queries []savedQuery) ([]savedQuery, error) {
-	normalized := make([]savedQuery, len(queries))
-	for i, q := range queries {
-		scope, err := q.notificationScope()
-		if err != nil {
-			return nil, err
+func validateSavedQuerySchemas(queries []savedQuery) error {
+	for _, q := range queries {
+		if _, err := q.legacyAllSetting(); err != nil {
+			return err
 		}
-		q.Scope = scope
-		q.All = false
-		normalized[i] = q
 	}
-	return normalized, nil
+	return nil
 }
 
 // findQuery returns the query with the given name (case-insensitive) and whether
@@ -199,10 +190,6 @@ func actionFromOptions(opts options) string {
 
 // optionsToSavedQuery builds a savedQuery from parsed options.
 func optionsToSavedQuery(name string, opts options) savedQuery {
-	scope := savedQueryScopeAll
-	if opts.unreadOnly {
-		scope = savedQueryScopeUnread
-	}
 	return savedQuery{
 		Name:   name,
 		Repo:   opts.repo,
@@ -210,7 +197,6 @@ func optionsToSavedQuery(name string, opts options) savedQuery {
 		Type:   opts.itemType,
 		State:  opts.state,
 		Draft:  opts.draft,
-		Scope:  scope,
 		Action: actionFromOptions(opts),
 		Tags:   opts.tags,
 	}
@@ -219,17 +205,19 @@ func optionsToSavedQuery(name string, opts options) savedQuery {
 // toOptions converts a savedQuery back into options for the fetch/filter
 // pipeline. The action string is mapped to the corresponding mutating flag.
 func (q savedQuery) toOptions() (options, error) {
-	scope, err := q.notificationScope()
+	legacyAll, err := q.legacyAllSetting()
 	if err != nil {
 		return options{}, err
 	}
+	if legacyAll != "" {
+		return options{}, fmt.Errorf("query %q contains legacy %s", q.Name, legacyAll)
+	}
 	opts := options{
-		repo:       q.Repo,
-		filter:     q.Filter,
-		itemType:   q.Type,
-		state:      q.State,
-		draft:      q.Draft,
-		unreadOnly: scope == savedQueryScopeUnread,
+		repo:     q.Repo,
+		filter:   q.Filter,
+		itemType: q.Type,
+		state:    q.State,
+		draft:    q.Draft,
 	}
 	switch q.Action {
 	case "read":
@@ -245,13 +233,13 @@ func (q savedQuery) toOptions() (options, error) {
 // descriptionParts returns the query's scope, filters, and action as
 // independently renderable fields.
 func (q savedQuery) descriptionParts() ([]string, error) {
-	scope, err := q.notificationScope()
+	legacyAll, err := q.legacyAllSetting()
 	if err != nil {
 		return nil, err
 	}
 	var parts []string
-	if scope == savedQueryScopeUnread {
-		parts = append(parts, "scope="+scope)
+	if legacyAll != "" {
+		parts = append(parts, legacyAll+" (unsupported; remove before running)")
 	}
 	if q.Repo != "" {
 		parts = append(parts, "repo="+q.Repo)

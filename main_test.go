@@ -127,42 +127,38 @@ func TestParseArgs(t *testing.T) {
 }
 
 func TestNotificationsEndpoint(t *testing.T) {
-	if got := notificationsEndpoint(options{}); got != "notifications?per_page=50&all=true" {
-		t.Errorf("endpoint = %q, want %q", got, "notifications?per_page=50&all=true")
-	}
-	if got := notificationsEndpoint(options{repo: "octo/repo"}); got != "repos/octo/repo/notifications?per_page=50&all=true" {
-		t.Errorf("endpoint = %q, want %q", got, "repos/octo/repo/notifications?per_page=50&all=true")
-	}
-	if got := notificationsEndpoint(options{unreadOnly: true}); got != "notifications?per_page=50" {
+	if got := notificationsEndpoint(options{}); got != "notifications?per_page=50" {
 		t.Errorf("endpoint = %q, want %q", got, "notifications?per_page=50")
 	}
-	if got := notificationsEndpoint(options{repo: "octo/repo", unreadOnly: true}); got != "repos/octo/repo/notifications?per_page=50" {
+	if got := notificationsEndpoint(options{repo: "octo/repo"}); got != "repos/octo/repo/notifications?per_page=50" {
 		t.Errorf("endpoint = %q, want %q", got, "repos/octo/repo/notifications?per_page=50")
+	}
+	if got := notificationsEndpoint(options{all: true}); got != "notifications?per_page=50&all=true" {
+		t.Errorf("endpoint = %q, want %q", got, "notifications?per_page=50&all=true")
+	}
+	if got := notificationsEndpoint(options{repo: "octo/repo", all: true}); got != "repos/octo/repo/notifications?per_page=50&all=true" {
+		t.Errorf("endpoint = %q, want %q", got, "repos/octo/repo/notifications?per_page=50&all=true")
 	}
 }
 
 func TestParseArgsNotificationScope(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		args       []string
-		unreadOnly bool
+		name string
+		args []string
+		all  bool
 	}{
 		{"default", nil, false},
-		{"legacy short all", []string{"-a"}, false},
-		{"legacy all", []string{"--all"}, false},
-		{"legacy all false", []string{"--all=false"}, true},
-		{"unread only", []string{"--unread-only"}, true},
-		{"unread only false", []string{"--unread-only=false"}, false},
-		{"last scope flag wins all", []string{"--unread-only", "--all"}, false},
-		{"last scope flag wins unread", []string{"--all", "--unread-only"}, true},
+		{"short all", []string{"-a"}, true},
+		{"all", []string{"--all"}, true},
+		{"all false", []string{"--all=false"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts, err := parseArgs(tc.args)
 			if err != nil {
 				t.Fatalf("parseArgs(%v): %v", tc.args, err)
 			}
-			if opts.unreadOnly != tc.unreadOnly {
-				t.Errorf("unreadOnly = %v, want %v", opts.unreadOnly, tc.unreadOnly)
+			if opts.all != tc.all {
+				t.Errorf("all = %v, want %v", opts.all, tc.all)
 			}
 		})
 	}
