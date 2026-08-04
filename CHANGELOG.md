@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-04
+
 ### Changed
 
 - Restored unread notifications as the default for commands and saved queries.
@@ -67,7 +69,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Initial notification listing, filtering, interactive browsing, and triage actions.
 - Added repository focus, bulk actions, API quota reporting, documentation, and licensing.
 
-[Unreleased]: https://github.com/xirzec/gh-notifications/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/xirzec/gh-notifications/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/xirzec/gh-notifications/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/xirzec/gh-notifications/releases/tag/v0.4.0
 [0.3.0]: https://github.com/xirzec/gh-notifications/releases/tag/v0.3.0
 [0.2.1]: https://github.com/xirzec/gh-notifications/releases/tag/v0.2.1
