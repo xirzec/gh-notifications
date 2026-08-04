@@ -21,6 +21,17 @@ Run `make fmt` before committing — `make lint` fails if any file is not gofmt-
 
 `SPEC.md` is the source of truth for intended behavior and features. Consult it before implementing new functionality, and update it when adding or changing features.
 
+## Changelog and Releases
+
+- `CHANGELOG.md` is the consumer-facing source for release notes and migration guidance.
+- Update the `[Unreleased]` section in the same pull request as any user-visible feature, behavior
+  change, bug fix, deprecation, flag change, or saved-query schema change.
+- When cutting a release, move the relevant `[Unreleased]` entries into a
+  `## [VERSION] - YYYY-MM-DD` section, leave a fresh `[Unreleased]` section, and update the
+  comparison links at the bottom of the file.
+- Finalize the changelog version and date before creating the `v*` tag that triggers the release
+  workflow.
+
 ## Architecture
 
 - Single-binary CLI extension following the `gh` extension pattern
