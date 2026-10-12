@@ -613,7 +613,9 @@ func loadFilteredNotifications(tracker *rateLimitTracker, opts options) ([]Notif
 			return nil, err
 		}
 		details, gqlQuota, err := fetchItemDetails(gqlClient, notifications)
-		tracker.setGraphQL(gqlQuota)
+		if gqlQuota != nil {
+			tracker.setGraphQL(gqlQuota)
+		}
 		if err != nil {
 			return nil, err
 		}

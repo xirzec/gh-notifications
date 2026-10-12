@@ -822,6 +822,62 @@ func TestLoadFilteredNotifications(t *testing.T) {
 	}
 }
 
+func TestLoadFilteredNotificationsPreservesGraphQLQuota(t *testing.T) {
+	boom := errors.New("boom")
+	for _, tc := range []struct {
+		name      string
+		err       error
+		quota     *rateLimit
+		itemCount int
+		failAt    int
+		want      int
+	}{
+		{"first batch fails", boom, nil, 1, 0, 4999},
+		{"no new quota", nil, nil, 1, 0, 4999},
+		{"later batch fails", boom, &rateLimit{remaining: 4990, limit: 5000}, stateBatchSize + 1, 2, 4990},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeGQL{state: "OPEN", author: "alice", rl: &rateLimit{remaining: 4999, limit: 5000}}
+			withFakeGraphQLClient(t, fake, nil)
+			doer := &recordingDoer{body: `[{"subject":{"type":"PullRequest","url":"https://api.github.com/repos/o/r/pulls/1"}}]`}
+			tracker := newRateLimitTracker(doer)
+			opts := options{author: "alice"}
+			if _, err := loadFilteredNotifications(tracker, opts); err != nil {
+				t.Fatalf("initial lookup: %v", err)
+			}
+			if tracker.gql == nil || tracker.gql.remaining != 4999 {
+				t.Fatalf("initial quota not recorded: %+v", tracker.gql)
+			}
+
+			notifications := make([]Notification, tc.itemCount)
+			for i := range notifications {
+				notifications[i].Subject = NotificationSubject{
+					Type: "PullRequest", URL: fmt.Sprintf("https://api.github.com/repos/o/r/pulls/%d", i+1),
+				}
+			}
+			body, err := json.Marshal(notifications)
+			if err != nil {
+				t.Fatal(err)
+			}
+			doer.body = string(body)
+			fake.calls, fake.failAt, fake.err, fake.rl = 0, tc.failAt, tc.err, tc.quota
+			got, err := loadFilteredNotifications(tracker, opts)
+			if !errors.Is(err, tc.err) || (err != nil && got != nil) {
+				t.Fatalf("notifications = %v, error = %v, want error %v", got, err, tc.err)
+			}
+			if tracker.gql == nil || tracker.gql.remaining != tc.want {
+				t.Fatalf("quota = %+v, want remaining %d", tracker.gql, tc.want)
+			}
+			var out bytes.Buffer
+			tracker.report(&out)
+			want := fmt.Sprintf("GitHub GraphQL API quota: %d/5000 remaining", tc.want)
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("report = %q, want %q", out.String(), want)
+			}
+		})
+	}
+}
+
 func TestLoadFilteredNotificationsErrors(t *testing.T) {
 	boom := errors.New("boom")
 	for _, tc := range []struct {
