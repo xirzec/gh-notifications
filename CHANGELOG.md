@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Added an inclusion-only `--author` filter for issue/PR creators, including
+  support for both `dependabot` and `dependabot[bot]` logins and saved queries.
+
+### Fixed
+
+- Apply state, draft, and author filters together so item details remain associated
+  with the correct notifications when filters are combined.
+- Report failed or malformed item-detail lookups instead of silently using incomplete
+  results, preventing mutating actions from running after a failed lookup.
+
 ## [0.5.0] - 2026-08-04
 
 ### Changed

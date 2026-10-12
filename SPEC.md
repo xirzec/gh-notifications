@@ -28,8 +28,8 @@ request of each kind:
 - **REST** quota comes from the rate-limit headers (`X-RateLimit-Remaining`, `X-RateLimit-Limit`,
   `X-RateLimit-Reset`) of the last REST request
 - **GraphQL** quota comes from a `rateLimit { limit remaining resetAt }` field added to the
-  batched state query, and is only reported when `--state` triggers a GraphQL call (REST and
-  GraphQL have separate quotas)
+  batched item-details query, and is only reported when `--state`, `--draft`, or `--author`
+  triggers a GraphQL call (REST and GraphQL have separate quotas)
 
 ```
 GitHub REST API quota: 4593/5000 remaining, resets at 16:43:22
@@ -129,7 +129,25 @@ gh notifications --repo OWNER/REPO --draft
 
 - Keeps only draft pull requests
 - Issues and non-draft PRs are excluded
-- Uses the same batched GraphQL lookup as `--state` (the `isDraft` field); when both `--draft` and `--state` are given, they share a single set of GraphQL requests
+- Uses the same batched GraphQL lookup as `--state` (the `isDraft` field); state, draft, and author filters share a single set of GraphQL requests
+
+#### Filtering by author
+
+```
+gh notifications --author octocat
+gh notifications --author dependabot
+gh notifications --author "dependabot[bot]" --interactive
+```
+
+- `--author LOGIN` keeps only issues/PRs created by that GitHub login
+- Author filtering is inclusion-only; negated values such as `!dependabot` are not supported
+- Author means the original issue/PR creator, not the latest commenter or the actor that triggered the notification
+- Logins are matched exactly and case-insensitively, with surrounding whitespace ignored; the bot suffix `[bot]` is optional, so `dependabot` and `dependabot[bot]` match the same author
+- Other subject types and items whose author is unavailable are excluded
+- Composable with repository, title, type, state, and draft filters, interactive mode, and mutating actions
+- Creators are fetched through the same batched GraphQL lookup as state/draft details, without per-item REST requests. All item-detail filters are applied together so their details stay associated with the correct notifications
+- Failed or malformed item-detail lookups abort the command with an error before any mutating action is taken
+- The filter can be saved in queries as `author`
 
 ### Open a Notification in the Browser
 
@@ -166,7 +184,7 @@ gh notifications --repo OWNER/REPO --state open --mark-read
 gh notifications --mark-read --dry-run
 ```
 
-- Operates on the notifications left after all filters (`--repo`, `--filter`, `--type`, `--state`) are applied
+- Operates on the notifications left after all filters (`--repo`, `--filter`, `--type`, `--state`, `--draft`, `--author`) are applied
 - Marks each thread as read via `PATCH /notifications/threads/{thread_id}`
 - Lists the affected notifications and asks for an interactive `[y/N]` confirmation before making any change; anything other than `y`/`yes` aborts without calling the API
 - `--dry-run` reports exactly what would be marked and makes **no** API calls — use it to safely test filters before mutating
@@ -231,6 +249,7 @@ queries:
   - name: cleanup-bot-prs
     repo: owner/repo
     type: pr
+    author: dependabot
     action: unsubscribe   # "" | read | done | unsubscribe
     tags: [cleanup]
 ```
@@ -239,7 +258,8 @@ queries:
 
 ```
 gh notifications save <name> [--repo R] [--filter T] [--type T] [--state S] \
-    [--draft] [--mark-read|--mark-done|--unsubscribe] [--tag t1 --tag t2]
+    [--draft] [--author LOGIN] \
+    [--mark-read|--mark-done|--unsubscribe] [--tag t1 --tag t2]
 ```
 
 - Captures the given filter flags and an optional action under `<name>`

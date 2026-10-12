@@ -62,6 +62,8 @@ type options struct {
 	// draft, when true, keeps only draft pull requests. Requires fetching
 	// each item.
 	draft bool
+	// author matches the issue/PR creator's GitHub login.
+	author string
 	// interactive, when true, prompts the user to pick a notification to
 	// open in a web browser instead of printing the table.
 	interactive bool
@@ -105,6 +107,7 @@ func addSavedQueryFilterFlags(fs *flag.FlagSet, opts *options) {
 	fs.StringVar(&opts.itemType, "t", "", "Keep only notifications of this type (shorthand)")
 	fs.StringVar(&opts.state, "state", "", "Keep only issues/PRs in this state (open, closed, merged, not-planned, completed); closed excludes merged PRs")
 	fs.BoolVar(&opts.draft, "draft", false, "Keep only draft pull requests")
+	fs.StringVar(&opts.author, "author", "", "Keep only issues/PRs created by this GitHub login (case-insensitive; [bot] suffix optional)")
 }
 
 func addFilterFlags(fs *flag.FlagSet, opts *options) {
@@ -150,6 +153,9 @@ func validateOptions(opts options) error {
 		if !validStates[normalizeState(opts.state)] {
 			return fmt.Errorf("invalid state %q: expected open, closed, merged, not-planned, or completed", opts.state)
 		}
+	}
+	if opts.author != "" && (normalizeAuthor(opts.author) == "" || strings.HasPrefix(strings.TrimSpace(opts.author), "!")) {
+		return fmt.Errorf("invalid --author %q: expected a GitHub login for inclusion-only filtering", opts.author)
 	}
 	mutations := 0
 	for _, set := range []bool{opts.markRead, opts.markDone, opts.unsubscribe} {
@@ -236,9 +242,13 @@ func filterByType(notifications []Notification, itemType string) []Notification 
 }
 
 // graphQLDoer is the subset of api.GraphQLClient used to batch-fetch item
-// states. It allows the batching logic to be unit tested with a fake.
+// details. It allows the batching logic to be unit tested with a fake.
 type graphQLDoer interface {
 	Do(query string, variables map[string]interface{}, response interface{}) error
+}
+
+var newGraphQLClient = func() (graphQLDoer, error) {
+	return api.DefaultGraphQLClient()
 }
 
 // subjectRef identifies an issue or pull request by repository and number.
@@ -269,6 +279,11 @@ func parseSubjectRef(apiURL string) (subjectRef, bool) {
 // hyphens treated as underscores (so "not-planned" == "not_planned").
 func normalizeState(s string) string {
 	return strings.ToLower(strings.ReplaceAll(s, "-", "_"))
+}
+
+// normalizeAuthor accepts both GraphQL bot logins and REST-style [bot] logins.
+func normalizeAuthor(login string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(login)), "[bot]")
 }
 
 // validStates lists the accepted --state values (after normalization).
@@ -334,14 +349,15 @@ type itemDetail struct {
 	state       string // normalized: "open", "closed", or "merged"
 	stateReason string // normalized issue close reason: "completed", "not_planned", "reopened", or ""
 	isDraft     bool   // true only for draft pull requests
+	author      string // creator's GitHub login; empty when unavailable
 }
 
 // fetchItemDetails returns a map from notification index to its issue/PR detail,
 // fetched in batches via a single GraphQL query per batch. Notifications that
 // are not issues/PRs, or whose subject URL cannot be parsed, are absent from the
 // map. The second return value, when non-nil, is the GraphQL API quota reported
-// by the most recent batch.
-func fetchItemDetails(doer graphQLDoer, notifications []Notification) (map[int]itemDetail, *rateLimit) {
+// by the most recent successful batch. Failures return no partial details.
+func fetchItemDetails(doer graphQLDoer, notifications []Notification) (map[int]itemDetail, *rateLimit, error) {
 	type entry struct {
 		idx int
 		ref subjectRef
@@ -372,7 +388,7 @@ func fetchItemDetails(doer graphQLDoer, notifications []Notification) (map[int]i
 			o, r, num := fmt.Sprintf("o%d", j), fmt.Sprintf("r%d", j), fmt.Sprintf("n%d", j)
 			params = append(params, fmt.Sprintf("$%s:String!,$%s:String!,$%s:Int!", o, r, num))
 			fields = append(fields, fmt.Sprintf(
-				"i%d: repository(owner:$%s,name:$%s){issueOrPullRequest(number:$%s){__typename ... on Issue{state stateReason} ... on PullRequest{state isDraft}}}",
+				"i%d: repository(owner:$%s,name:$%s){issueOrPullRequest(number:$%s){__typename ... on Issue{state stateReason author{login}} ... on PullRequest{state isDraft author{login}}}}",
 				j, o, r, num))
 			variables[o] = e.ref.owner
 			variables[r] = e.ref.repo
@@ -382,7 +398,7 @@ func fetchItemDetails(doer graphQLDoer, notifications []Notification) (map[int]i
 
 		var resp map[string]json.RawMessage
 		if err := doer.Do(query, variables, &resp); err != nil {
-			continue
+			return nil, quota, fmt.Errorf("fetching item details: %w", err)
 		}
 
 		if rlRaw, ok := resp["rateLimit"]; ok {
@@ -395,53 +411,79 @@ func fetchItemDetails(doer graphQLDoer, notifications []Notification) (map[int]i
 		for j, e := range batch {
 			itemRaw, ok := resp[fmt.Sprintf("i%d", j)]
 			if !ok {
+				return nil, quota, fmt.Errorf("fetching item details for %s/%s#%d: missing response", e.ref.owner, e.ref.repo, e.ref.number)
+			}
+			var node *struct {
+				IssueOrPullRequest json.RawMessage `json:"issueOrPullRequest"`
+			}
+			if err := json.Unmarshal(itemRaw, &node); err != nil {
+				return nil, quota, fmt.Errorf("decoding item details for %s/%s#%d: %w", e.ref.owner, e.ref.repo, e.ref.number, err)
+			}
+			if node == nil {
 				continue
 			}
-			var node struct {
-				IssueOrPullRequest *struct {
-					State       string `json:"state"`
-					StateReason string `json:"stateReason"`
-					IsDraft     bool   `json:"isDraft"`
-				} `json:"issueOrPullRequest"`
+			if len(node.IssueOrPullRequest) == 0 {
+				return nil, quota, fmt.Errorf("fetching item details for %s/%s#%d: missing item response", e.ref.owner, e.ref.repo, e.ref.number)
 			}
-			if err := json.Unmarshal(itemRaw, &node); err == nil && node.IssueOrPullRequest != nil {
-				details[e.idx] = itemDetail{
-					state:       strings.ToLower(node.IssueOrPullRequest.State),
-					stateReason: strings.ToLower(node.IssueOrPullRequest.StateReason),
-					isDraft:     node.IssueOrPullRequest.IsDraft,
+			var item *struct {
+				State       string          `json:"state"`
+				StateReason string          `json:"stateReason"`
+				IsDraft     bool            `json:"isDraft"`
+				Author      json.RawMessage `json:"author"`
+			}
+			if err := json.Unmarshal(node.IssueOrPullRequest, &item); err != nil {
+				return nil, quota, fmt.Errorf("decoding item details for %s/%s#%d: %w", e.ref.owner, e.ref.repo, e.ref.number, err)
+			}
+			if item == nil {
+				continue
+			}
+			if len(item.Author) == 0 {
+				return nil, quota, fmt.Errorf("fetching item details for %s/%s#%d: missing author response", e.ref.owner, e.ref.repo, e.ref.number)
+			}
+			var author *struct {
+				Login string `json:"login"`
+			}
+			if err := json.Unmarshal(item.Author, &author); err != nil {
+				return nil, quota, fmt.Errorf("decoding author for %s/%s#%d: %w", e.ref.owner, e.ref.repo, e.ref.number, err)
+			}
+			detail := itemDetail{
+				state:       strings.ToLower(item.State),
+				stateReason: strings.ToLower(item.StateReason),
+				isDraft:     item.IsDraft,
+			}
+			if author != nil {
+				if normalizeAuthor(author.Login) == "" {
+					return nil, quota, fmt.Errorf("fetching item details for %s/%s#%d: missing author login", e.ref.owner, e.ref.repo, e.ref.number)
 				}
+				detail.author = author.Login
 			}
+			details[e.idx] = detail
 		}
 	}
-	return details, quota
+	return details, quota, nil
 }
 
-// filterByState keeps only issues/PRs whose state matches the requested state,
-// using pre-fetched details. An empty state returns the input unchanged.
-func filterByState(notifications []Notification, details map[int]itemDetail, state string) []Notification {
-	if state == "" {
+// filterByItemDetails applies all GraphQL-derived filters in one pass so the
+// details stay associated with their original notification indices.
+func filterByItemDetails(notifications []Notification, details map[int]itemDetail, opts options) []Notification {
+	if opts.state == "" && !opts.draft && opts.author == "" {
 		return notifications
 	}
+	author := normalizeAuthor(opts.author)
 	filtered := make([]Notification, 0, len(notifications))
 	for i, n := range notifications {
-		if d, ok := details[i]; ok && matchesState(d, state) {
-			filtered = append(filtered, n)
+		d, ok := details[i]
+		if opts.state != "" && (!ok || !matchesState(d, opts.state)) {
+			continue
 		}
-	}
-	return filtered
-}
-
-// filterByDraft keeps only draft pull requests, using pre-fetched details. When
-// draft is false it returns the input unchanged.
-func filterByDraft(notifications []Notification, details map[int]itemDetail, draft bool) []Notification {
-	if !draft {
-		return notifications
-	}
-	filtered := make([]Notification, 0, len(notifications))
-	for i, n := range notifications {
-		if d, ok := details[i]; ok && d.isDraft {
-			filtered = append(filtered, n)
+		if opts.draft && (!ok || !d.isDraft || !strings.EqualFold(n.Subject.Type, "PullRequest")) {
+			continue
 		}
+		login := normalizeAuthor(d.author)
+		if opts.author != "" && (login == "" || login != author) {
+			continue
+		}
+		filtered = append(filtered, n)
 	}
 	return filtered
 }
@@ -555,8 +597,8 @@ func relativeAge(t, now time.Time) string {
 
 // loadFilteredNotifications fetches the authenticated user's notifications and
 // applies all of opts' filters (title, type, and the batched GraphQL
-// state/draft filters), returning the resulting slice. REST and GraphQL quota
-// are recorded on the tracker.
+// state/draft/author filters), returning the resulting slice. REST and GraphQL
+// quota are recorded on the tracker.
 func loadFilteredNotifications(tracker *rateLimitTracker, opts options) ([]Notification, error) {
 	notifications, err := fetchNotifications(tracker, opts)
 	if err != nil {
@@ -565,15 +607,17 @@ func loadFilteredNotifications(tracker *rateLimitTracker, opts options) ([]Notif
 
 	notifications = filterByTitle(notifications, opts.filter)
 	notifications = filterByType(notifications, opts.itemType)
-	if opts.state != "" || opts.draft {
-		gqlClient, err := api.DefaultGraphQLClient()
+	if opts.state != "" || opts.draft || opts.author != "" {
+		gqlClient, err := newGraphQLClient()
 		if err != nil {
 			return nil, err
 		}
-		details, gqlQuota := fetchItemDetails(gqlClient, notifications)
+		details, gqlQuota, err := fetchItemDetails(gqlClient, notifications)
 		tracker.setGraphQL(gqlQuota)
-		notifications = filterByState(notifications, details, opts.state)
-		notifications = filterByDraft(notifications, details, opts.draft)
+		if err != nil {
+			return nil, err
+		}
+		notifications = filterByItemDetails(notifications, details, opts)
 	}
 	return notifications, nil
 }
