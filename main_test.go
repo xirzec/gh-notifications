@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -296,6 +297,53 @@ func TestParseArgsState(t *testing.T) {
 	}
 }
 
+func TestParseArgsAuthor(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		author  string
+		wantErr bool
+	}{
+		{"include", []string{"--author", "octocat"}, "octocat", false},
+		{"include equals", []string{"--author=dependabot[bot]"}, "dependabot[bot]", false},
+		{"missing author", []string{"--author"}, "", true},
+		{"blank author", []string{"--author", " "}, "", true},
+		{"bot suffix only", []string{"--author", "[bot]"}, "", true},
+		{"negation unsupported", []string{"--author", "!dependabot"}, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := parseArgs(tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseArgs: %v", err)
+			}
+			if opts.author != tc.author {
+				t.Errorf("author = %q, want %q", opts.author, tc.author)
+			}
+		})
+	}
+}
+
+func TestNormalizeAuthor(t *testing.T) {
+	for login, want := range map[string]string{
+		"octocat":           "octocat",
+		" Octocat ":         "octocat",
+		"dependabot":        "dependabot",
+		"Dependabot[bot]":   "dependabot",
+		"dependabot-helper": "dependabot-helper",
+		"":                  "",
+	} {
+		if got := normalizeAuthor(login); got != want {
+			t.Errorf("normalizeAuthor(%q) = %q, want %q", login, got, want)
+		}
+	}
+}
+
 func TestMatchesState(t *testing.T) {
 	cases := []struct {
 		detail itemDetail
@@ -348,22 +396,31 @@ func TestParseSubjectRef(t *testing.T) {
 }
 
 // fakeGQL is a test stand-in for the GraphQL client's Do method. It reports the
-// same state (and draft flag) for every aliased item in the batch (or a null
-// item when state is empty), and returns err when set. When rl is set, it
-// includes a rateLimit object in the response.
+// same details for every aliased item unless items supplies details by item
+// number. An empty state produces a null item.
 type fakeGQL struct {
 	state       string // GraphQL enum, e.g. "OPEN", "CLOSED", "MERGED"
 	stateReason string // GraphQL enum, e.g. "NOT_PLANNED", "COMPLETED"
 	draft       bool
+	author      string
+	items       map[int]itemDetail
+	raw         string
 	err         error
+	failAt      int
 	calls       int
+	query       string
+	numbers     []int
 	rl          *rateLimit
 }
 
 func (f *fakeGQL) Do(query string, variables map[string]interface{}, response interface{}) error {
 	f.calls++
-	if f.err != nil {
+	f.query = query
+	if f.err != nil && (f.failAt == 0 || f.calls == f.failAt) {
 		return f.err
+	}
+	if f.raw != "" {
+		return json.Unmarshal([]byte(f.raw), response)
 	}
 	n := 0
 	for k := range variables {
@@ -373,9 +430,25 @@ func (f *fakeGQL) Do(query string, variables map[string]interface{}, response in
 	}
 	data := map[string]interface{}{}
 	for j := 0; j < n; j++ {
+		number, ok := variables[fmt.Sprintf("n%d", j)].(int)
+		if !ok {
+			return fmt.Errorf("missing item number for alias i%d", j)
+		}
+		f.numbers = append(f.numbers, number)
+		detail := itemDetail{state: f.state, stateReason: f.stateReason, isDraft: f.draft, author: f.author}
+		if f.items != nil {
+			detail = f.items[number]
+		}
 		var iopr interface{}
-		if f.state != "" {
-			iopr = map[string]interface{}{"state": f.state, "stateReason": f.stateReason, "isDraft": f.draft}
+		if detail.state != "" {
+			var author interface{}
+			if detail.author != "" {
+				author = map[string]interface{}{"login": detail.author}
+			}
+			iopr = map[string]interface{}{
+				"state": strings.ToUpper(detail.state), "stateReason": strings.ToUpper(detail.stateReason),
+				"isDraft": detail.isDraft, "author": author,
+			}
 		}
 		data[fmt.Sprintf("i%d", j)] = map[string]interface{}{"issueOrPullRequest": iopr}
 	}
@@ -386,8 +459,18 @@ func (f *fakeGQL) Do(query string, variables map[string]interface{}, response in
 			"resetAt":   f.rl.reset.Format(time.RFC3339),
 		}
 	}
-	b, _ := json.Marshal(data)
+	b, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
 	return json.Unmarshal(b, response)
+}
+
+func withFakeGraphQLClient(t *testing.T, doer graphQLDoer, err error) {
+	t.Helper()
+	prev := newGraphQLClient
+	newGraphQLClient = func() (graphQLDoer, error) { return doer, err }
+	t.Cleanup(func() { newGraphQLClient = prev })
 }
 
 func TestFetchItemDetails(t *testing.T) {
@@ -398,7 +481,11 @@ func TestFetchItemDetails(t *testing.T) {
 		{Subject: NotificationSubject{Type: "Issue", URL: "not-a-url"}},
 	}
 
-	details, _ := fetchItemDetails(&fakeGQL{state: "CLOSED", stateReason: "NOT_PLANNED", draft: true}, notifications)
+	fake := &fakeGQL{state: "CLOSED", stateReason: "NOT_PLANNED", draft: true, author: "dependabot"}
+	details, _, err := fetchItemDetails(fake, notifications)
+	if err != nil {
+		t.Fatalf("fetchItemDetails: %v", err)
+	}
 	if len(details) != 2 {
 		t.Fatalf("len(details) = %d, want 2", len(details))
 	}
@@ -410,6 +497,14 @@ func TestFetchItemDetails(t *testing.T) {
 	}
 	if !details[1].isDraft {
 		t.Errorf("expected isDraft true for index 1")
+	}
+	if details[0].author != "dependabot" || details[1].author != "dependabot" {
+		t.Errorf("author missing from issue/PR details: %+v", details)
+	}
+	for _, fragment := range []string{"... on Issue{state stateReason author{login}}", "... on PullRequest{state isDraft author{login}}"} {
+		if !strings.Contains(fake.query, fragment) {
+			t.Errorf("query missing %q: %s", fragment, fake.query)
+		}
 	}
 	if _, ok := details[2]; ok {
 		t.Error("release should not have details")
@@ -424,7 +519,10 @@ func TestFetchItemDetailsQuota(t *testing.T) {
 		{Subject: NotificationSubject{Type: "Issue", URL: "https://api.github.com/repos/o/r/issues/1"}},
 	}
 	fake := &fakeGQL{state: "OPEN", rl: &rateLimit{remaining: 4990, limit: 5000, reset: time.Unix(1700000000, 0)}}
-	_, quota := fetchItemDetails(fake, notifications)
+	_, quota, err := fetchItemDetails(fake, notifications)
+	if err != nil {
+		t.Fatalf("fetchItemDetails: %v", err)
+	}
 	if quota == nil {
 		t.Fatal("expected a GraphQL quota")
 	}
@@ -441,13 +539,109 @@ func TestFetchItemDetailsBatches(t *testing.T) {
 			URL:  fmt.Sprintf("https://api.github.com/repos/o/r/issues/%d", i+1),
 		}}
 	}
-	fake := &fakeGQL{state: "CLOSED"}
-	details, _ := fetchItemDetails(fake, notifications)
+	fake := &fakeGQL{state: "CLOSED", author: "dependabot"}
+	details, _, err := fetchItemDetails(fake, notifications)
+	if err != nil {
+		t.Fatalf("fetchItemDetails: %v", err)
+	}
 	if len(details) != len(notifications) {
 		t.Errorf("len(details) = %d, want %d", len(details), len(notifications))
 	}
 	if fake.calls != 2 {
 		t.Errorf("expected 2 batched calls, got %d", fake.calls)
+	}
+	for i := range notifications {
+		if details[i].author != "dependabot" {
+			t.Errorf("missing author at index %d: %+v", i, details[i])
+		}
+	}
+}
+
+func TestFetchItemDetailsErrors(t *testing.T) {
+	notifications := []Notification{
+		{Subject: NotificationSubject{Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/1"}},
+	}
+	for _, tc := range []struct {
+		name string
+		fake fakeGQL
+		want string
+	}{
+		{"API failure", fakeGQL{err: errors.New("boom")}, "fetching item details: boom"},
+		{"missing alias", fakeGQL{raw: `{}`}, "missing response"},
+		{"invalid item", fakeGQL{raw: `{"i0":"unexpected"}`}, "decoding item details for o/r#1"},
+		{"missing item", fakeGQL{raw: `{"i0":{}}`}, "missing item response"},
+		{"missing author", fakeGQL{raw: `{"i0":{"issueOrPullRequest":{"state":"OPEN","isDraft":false}}}`}, "missing author response"},
+		{"invalid author", fakeGQL{raw: `{"i0":{"issueOrPullRequest":{"state":"OPEN","isDraft":false,"author":"dependabot"}}}`}, "decoding author for o/r#1"},
+		{"missing login", fakeGQL{raw: `{"i0":{"issueOrPullRequest":{"state":"OPEN","isDraft":false,"author":{}}}}`}, "missing author login"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			details, _, err := fetchItemDetails(&tc.fake, notifications)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+			if details != nil {
+				t.Errorf("failed lookup returned partial details: %+v", details)
+			}
+		})
+	}
+}
+
+func TestFetchItemDetailsRequiredFields(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		subjectType string
+		item        string
+		wantErr     string
+		wantDraft   bool
+	}{
+		{"issue missing state", "Issue", `{"author":{"login":"alice"}}`, "missing state", false},
+		{"issue null state", "Issue", `{"state":null,"author":{"login":"alice"}}`, "missing state", false},
+		{"PR missing state", "PullRequest", `{"isDraft":false,"author":{"login":"alice"}}`, "missing state", false},
+		{"PR null state", "PullRequest", `{"state":null,"isDraft":false,"author":{"login":"alice"}}`, "missing state", false},
+		{"PR missing draft", "PullRequest", `{"state":"OPEN","author":{"login":"alice"}}`, "missing isDraft", false},
+		{"PR null draft", "PullRequest", `{"state":"OPEN","isDraft":null,"author":{"login":"alice"}}`, "missing isDraft", false},
+		{"ready PR", "PullRequest", `{"state":"OPEN","isDraft":false,"author":{"login":"alice"}}`, "", false},
+		{"draft PR", "PullRequest", `{"state":"OPEN","isDraft":true,"author":{"login":"alice"}}`, "", true},
+		{"issue without draft", "Issue", `{"state":"OPEN","author":{"login":"alice"}}`, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			notifications := []Notification{
+				{Subject: NotificationSubject{Type: tc.subjectType, URL: "https://api.github.com/repos/o/r/issues/1"}},
+			}
+			fake := &fakeGQL{raw: fmt.Sprintf(`{"i0":{"issueOrPullRequest":%s}}`, tc.item)}
+			details, _, err := fetchItemDetails(fake, notifications)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) || details != nil {
+					t.Fatalf("details = %v, error = %v, want %q", details, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("fetchItemDetails: %v", err)
+			}
+			detail, ok := details[0]
+			if !ok || detail.state != "open" || detail.author != "alice" || detail.isDraft != tc.wantDraft {
+				t.Errorf("detail = %+v, present = %v, want draft = %v", detail, ok, tc.wantDraft)
+			}
+		})
+	}
+}
+
+func TestFetchItemDetailsLaterBatchError(t *testing.T) {
+	notifications := make([]Notification, stateBatchSize+1)
+	for i := range notifications {
+		notifications[i].Subject = NotificationSubject{
+			Type: "PullRequest", URL: fmt.Sprintf("https://api.github.com/repos/o/r/pulls/%d", i+1),
+		}
+	}
+	boom := errors.New("boom")
+	fake := &fakeGQL{state: "OPEN", author: "dependabot", err: boom, failAt: 2, rl: &rateLimit{remaining: 4990, limit: 5000}}
+	details, quota, err := fetchItemDetails(fake, notifications)
+	if !errors.Is(err, boom) || details != nil || fake.calls != 2 {
+		t.Fatalf("details = %v, calls = %d, error = %v", details, fake.calls, err)
+	}
+	if quota == nil || quota.remaining != 4990 {
+		t.Errorf("last successful quota was lost: %+v", quota)
 	}
 }
 
@@ -463,13 +657,13 @@ func TestFilterByState(t *testing.T) {
 	}
 
 	t.Run("empty returns all", func(t *testing.T) {
-		if got := filterByState(notifications, details, ""); len(got) != 3 {
+		if got := filterByItemDetails(notifications, details, options{}); len(got) != 3 {
 			t.Errorf("len = %d, want 3", len(got))
 		}
 	})
 
 	t.Run("open keeps issue and pr, drops release", func(t *testing.T) {
-		got := filterByState(notifications, details, "open")
+		got := filterByItemDetails(notifications, details, options{state: "open"})
 		if len(got) != 2 {
 			t.Fatalf("len = %d, want 2", len(got))
 		}
@@ -481,7 +675,7 @@ func TestFilterByState(t *testing.T) {
 	})
 
 	t.Run("closed excludes open items", func(t *testing.T) {
-		if got := filterByState(notifications, details, "closed"); len(got) != 0 {
+		if got := filterByItemDetails(notifications, details, options{state: "closed"}); len(got) != 0 {
 			t.Errorf("len = %d, want 0", len(got))
 		}
 	})
@@ -497,7 +691,7 @@ func TestFilterByState(t *testing.T) {
 			1: {state: "closed", stateReason: "completed"},
 			2: {state: "open"},
 		}
-		got := filterByState(items, d, "not-planned")
+		got := filterByItemDetails(items, d, options{state: "not-planned"})
 		if len(got) != 1 || got[0].Subject.Title != "unplanned" {
 			t.Errorf("got %v, want only the not-planned issue", got)
 		}
@@ -517,13 +711,13 @@ func TestFilterByDraft(t *testing.T) {
 	}
 
 	t.Run("false returns all", func(t *testing.T) {
-		if got := filterByDraft(notifications, details, false); len(got) != 3 {
+		if got := filterByItemDetails(notifications, details, options{}); len(got) != 3 {
 			t.Errorf("len = %d, want 3", len(got))
 		}
 	})
 
 	t.Run("keeps only draft PRs", func(t *testing.T) {
-		got := filterByDraft(notifications, details, true)
+		got := filterByItemDetails(notifications, details, options{draft: true})
 		if len(got) != 1 {
 			t.Fatalf("len = %d, want 1", len(got))
 		}
@@ -531,6 +725,224 @@ func TestFilterByDraft(t *testing.T) {
 			t.Errorf("kept %q", got[0].Subject.Title)
 		}
 	})
+}
+
+func TestFilterByItemDetails(t *testing.T) {
+	notifications := []Notification{
+		{ID: "closed", Subject: NotificationSubject{Type: "PullRequest"}},
+		{ID: "bot", Subject: NotificationSubject{Type: "PullRequest"}},
+		{ID: "ready", Subject: NotificationSubject{Type: "PullRequest"}},
+		{ID: "draft", Subject: NotificationSubject{Type: "PullRequest"}},
+		{ID: "issue", Subject: NotificationSubject{Type: "Issue"}},
+		{ID: "release", Subject: NotificationSubject{Type: "Release"}},
+		{ID: "deleted", Subject: NotificationSubject{Type: "PullRequest"}},
+		{ID: "unavailable", Subject: NotificationSubject{Type: "PullRequest"}},
+		{ID: "prefix", Subject: NotificationSubject{Type: "PullRequest"}},
+	}
+	details := map[int]itemDetail{
+		0: {state: "closed", isDraft: true, author: "alice"},
+		1: {state: "open", isDraft: true, author: "dependabot"},
+		2: {state: "open", author: "Alice"},
+		3: {state: "open", isDraft: true, author: "alice"},
+		4: {state: "open", author: "alice"},
+		6: {state: "open", isDraft: true},
+		8: {state: "open", author: "dependabot-helper"},
+	}
+	for _, tc := range []struct {
+		name string
+		opts options
+		want string
+	}{
+		{"no filters", options{}, "closed,bot,ready,draft,issue,release,deleted,unavailable,prefix"},
+		{"creator", options{author: "ALICE"}, "closed,ready,draft,issue"},
+		{"bot", options{author: "dependabot"}, "bot"},
+		{"bot suffix", options{author: "Dependabot[bot]"}, "bot"},
+		{"exact login", options{author: "dependabot-helper"}, "prefix"},
+		{"state and draft", options{state: "open", draft: true}, "bot,draft,deleted"},
+		{"state draft and author", options{state: "open", draft: true, author: "alice"}, "draft"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var ids []string
+			for _, n := range filterByItemDetails(notifications, details, tc.opts) {
+				ids = append(ids, n.ID)
+			}
+			if got := strings.Join(ids, ","); got != tc.want {
+				t.Errorf("IDs = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFetchItemDetailsUnavailableAuthor(t *testing.T) {
+	notifications := []Notification{
+		{ID: "1", Subject: NotificationSubject{Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/1"}},
+	}
+	for _, raw := range []string{
+		`{"i0":{"issueOrPullRequest":{"state":"OPEN","isDraft":false,"author":null}}}`,
+		`{"i0":{"issueOrPullRequest":null}}`,
+		`{"i0":null}`,
+	} {
+		fake := &fakeGQL{raw: raw}
+		details, _, err := fetchItemDetails(fake, notifications)
+		if err != nil {
+			t.Fatalf("fetchItemDetails(%s): %v", raw, err)
+		}
+		if got := filterByItemDetails(notifications, details, options{author: "dependabot"}); len(got) != 0 {
+			t.Errorf("unknown author matched inclusion: %+v", got)
+		}
+		if got := filterByItemDetails(notifications, details, options{}); len(got) != 1 {
+			t.Errorf("unfiltered notification was dropped: %+v", got)
+		}
+	}
+}
+
+func TestLoadFilteredNotifications(t *testing.T) {
+	notifications := []Notification{
+		{ID: "1", Subject: NotificationSubject{Title: "Other change", Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/1"}},
+		{ID: "2", Subject: NotificationSubject{Title: "Fix release", Type: "Release"}},
+		{ID: "3", Subject: NotificationSubject{Title: "Fix closed", Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/3"}},
+		{ID: "4", Subject: NotificationSubject{Title: "Fix bot", Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/4"}},
+		{ID: "5", Subject: NotificationSubject{Title: "Fix ready", Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/5"}},
+		{ID: "6", Subject: NotificationSubject{Title: "Fix draft", Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/6"}},
+	}
+	body, err := json.Marshal(notifications)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		opts    options
+		want    string
+		numbers []int
+	}{
+		{"no item filters", options{}, "1,2,3,4,5,6", nil},
+		{"author only", options{author: "ALICE"}, "3,5,6", []int{1, 3, 4, 5, 6}},
+		{"all filters", options{filter: "Fix", itemType: "pr", state: "open", draft: true, author: "alice"}, "6", []int{3, 4, 5, 6}},
+		{"no matches", options{filter: "absent", author: "alice"}, "", nil},
+		{"unsupported type excluded", options{itemType: "release", author: "alice"}, "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeGQL{
+				items: map[int]itemDetail{
+					1: {state: "open", author: "bob"},
+					3: {state: "closed", isDraft: true, author: "alice"},
+					4: {state: "open", isDraft: true, author: "dependabot"},
+					5: {state: "open", author: "alice"},
+					6: {state: "open", isDraft: true, author: "alice"},
+				},
+				rl: &rateLimit{remaining: 4999, limit: 5000},
+			}
+			withFakeGraphQLClient(t, fake, nil)
+			doer := &recordingDoer{body: string(body)}
+			tracker := newRateLimitTracker(doer)
+			got, err := loadFilteredNotifications(tracker, tc.opts)
+			if err != nil {
+				t.Fatalf("loadFilteredNotifications: %v", err)
+			}
+			var ids []string
+			for _, n := range got {
+				ids = append(ids, n.ID)
+			}
+			if strings.Join(ids, ",") != tc.want {
+				t.Errorf("IDs = %v, want %q", ids, tc.want)
+			}
+			if !slices.Equal(fake.numbers, tc.numbers) {
+				t.Errorf("GraphQL fetched %v, want %v", fake.numbers, tc.numbers)
+			}
+			wantCalls := 0
+			if len(tc.numbers) > 0 {
+				wantCalls = 1
+				if tracker.gql == nil || tracker.gql.remaining != 4999 {
+					t.Errorf("GraphQL quota not recorded: %+v", tracker.gql)
+				}
+			}
+			if fake.calls != wantCalls || !slices.Equal(doer.calls, []string{"GET notifications?per_page=50"}) {
+				t.Errorf("GraphQL calls = %d, REST calls = %v", fake.calls, doer.calls)
+			}
+		})
+	}
+}
+
+func TestLoadFilteredNotificationsPreservesGraphQLQuota(t *testing.T) {
+	boom := errors.New("boom")
+	for _, tc := range []struct {
+		name      string
+		err       error
+		quota     *rateLimit
+		itemCount int
+		failAt    int
+		want      int
+	}{
+		{"first batch fails", boom, nil, 1, 0, 4999},
+		{"no new quota", nil, nil, 1, 0, 4999},
+		{"later batch fails", boom, &rateLimit{remaining: 4990, limit: 5000}, stateBatchSize + 1, 2, 4990},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeGQL{state: "OPEN", author: "alice", rl: &rateLimit{remaining: 4999, limit: 5000}}
+			withFakeGraphQLClient(t, fake, nil)
+			doer := &recordingDoer{body: `[{"subject":{"type":"PullRequest","url":"https://api.github.com/repos/o/r/pulls/1"}}]`}
+			tracker := newRateLimitTracker(doer)
+			opts := options{author: "alice"}
+			if _, err := loadFilteredNotifications(tracker, opts); err != nil {
+				t.Fatalf("initial lookup: %v", err)
+			}
+			if tracker.gql == nil || tracker.gql.remaining != 4999 {
+				t.Fatalf("initial quota not recorded: %+v", tracker.gql)
+			}
+
+			notifications := make([]Notification, tc.itemCount)
+			for i := range notifications {
+				notifications[i].Subject = NotificationSubject{
+					Type: "PullRequest", URL: fmt.Sprintf("https://api.github.com/repos/o/r/pulls/%d", i+1),
+				}
+			}
+			body, err := json.Marshal(notifications)
+			if err != nil {
+				t.Fatal(err)
+			}
+			doer.body = string(body)
+			fake.calls, fake.failAt, fake.err, fake.rl = 0, tc.failAt, tc.err, tc.quota
+			got, err := loadFilteredNotifications(tracker, opts)
+			if !errors.Is(err, tc.err) || (err != nil && got != nil) {
+				t.Fatalf("notifications = %v, error = %v, want error %v", got, err, tc.err)
+			}
+			if tracker.gql == nil || tracker.gql.remaining != tc.want {
+				t.Fatalf("quota = %+v, want remaining %d", tracker.gql, tc.want)
+			}
+			var out bytes.Buffer
+			tracker.report(&out)
+			want := fmt.Sprintf("GitHub GraphQL API quota: %d/5000 remaining", tc.want)
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("report = %q, want %q", out.String(), want)
+			}
+		})
+	}
+}
+
+func TestLoadFilteredNotificationsErrors(t *testing.T) {
+	boom := errors.New("boom")
+	for _, tc := range []struct {
+		name      string
+		restErr   error
+		clientErr error
+		gqlErr    error
+	}{
+		{"REST", boom, nil, nil},
+		{"GraphQL initialization", nil, boom, nil},
+		{"GraphQL lookup", nil, nil, boom},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withFakeGraphQLClient(t, &fakeGQL{err: tc.gqlErr}, tc.clientErr)
+			doer := &recordingDoer{
+				body: `[{"subject":{"type":"PullRequest","url":"https://api.github.com/repos/o/r/pulls/1"}}]`,
+				err:  tc.restErr,
+			}
+			got, err := loadFilteredNotifications(newRateLimitTracker(doer), options{author: "dependabot"})
+			if !errors.Is(err, boom) || got != nil {
+				t.Fatalf("notifications = %v, error = %v", got, err)
+			}
+		})
+	}
 }
 
 func TestFindNextPage(t *testing.T) {

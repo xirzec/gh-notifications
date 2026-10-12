@@ -31,6 +31,7 @@ type savedQuery struct {
 	Type   string `yaml:"type,omitempty"`
 	State  string `yaml:"state,omitempty"`
 	Draft  bool   `yaml:"draft,omitempty"`
+	Author string `yaml:"author,omitempty"`
 	// Action, when set, is one of "read", "done", or "unsubscribe".
 	Action string   `yaml:"action,omitempty"`
 	Tags   []string `yaml:"tags,omitempty"`
@@ -197,6 +198,7 @@ func optionsToSavedQuery(name string, opts options) savedQuery {
 		Type:   opts.itemType,
 		State:  opts.state,
 		Draft:  opts.draft,
+		Author: opts.author,
 		Action: actionFromOptions(opts),
 		Tags:   opts.tags,
 	}
@@ -218,6 +220,7 @@ func (q savedQuery) toOptions() (options, error) {
 		itemType: q.Type,
 		state:    q.State,
 		draft:    q.Draft,
+		author:   q.Author,
 	}
 	switch q.Action {
 	case "read":
@@ -255,6 +258,9 @@ func (q savedQuery) descriptionParts() ([]string, error) {
 	}
 	if q.Draft {
 		parts = append(parts, "draft")
+	}
+	if q.Author != "" {
+		parts = append(parts, "author="+q.Author)
 	}
 	if q.Action != "" {
 		parts = append(parts, "action="+q.Action)

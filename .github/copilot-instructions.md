@@ -65,7 +65,7 @@ accidentally destroying notification state, follow these rules:
 
 ## Conventions
 
-- Extension binary is named `gh-notifications.exe` (matches repo name without `gh-` prefix for `gh` dispatch)
+- Local builds use the extensionless binary name `gh-notifications`, as defined by `BINARY` in the Makefile, including on Windows.
 - Use `api.DefaultRESTClient()` / `api.DefaultGraphQLClient()` for authenticated calls (inherits `gh` auth)
 - API access is abstracted behind the `requestDoer` (REST) and `graphQLDoer` (GraphQL)
   interfaces so logic can be unit tested with fakes instead of live calls
@@ -80,11 +80,16 @@ accidentally destroying notification state, follow these rules:
 
 - `runNotifications` fetches once, then applies filters in order. `filterByTitle` and
   `filterByType` are pure functions over the fetched slice.
-- `--state`, `--draft`, and the issue close-reason states (`not-planned`/`completed`) all rely on
+- `--state`, `--draft`, `--author`, and the issue close-reason states
+  (`not-planned`/`completed`) all rely on
   per-item attributes fetched via **one batched GraphQL call** (`fetchItemDetails`, returning
-  `itemDetail{state, stateReason, isDraft}`); the filters (`filterByState`, `filterByDraft`) are
-  pure over that map. Add new GraphQL-derived filters by extending `itemDetail` and the query —
-  do not add per-item REST round-trips (avoid N+1).
+  `itemDetail{state, stateReason, isDraft, author}`). `filterByItemDetails` applies these filters
+  in one pure pass over the original slice and detail map so notification indices do not shift
+  between filters. Add new GraphQL-derived filters by extending `itemDetail` and the query —
+  do not add per-item REST round-trips (avoid N+1). Propagate lookup errors before applying actions.
+- Author filtering is inclusion-only and matches the issue/PR creator, not the latest notification
+  actor. Bot logins accept an optional `[bot]` suffix. Notifications with unavailable authors or
+  other subject types are excluded by `--author`.
 - The GraphQL query also requests the `rateLimit` field so the GraphQL quota is reported.
 
 ### Adding a mutating action

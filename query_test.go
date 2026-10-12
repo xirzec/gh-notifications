@@ -31,8 +31,8 @@ func TestLoadQueriesMissingFile(t *testing.T) {
 func TestSaveAndLoadRoundTrip(t *testing.T) {
 	withTempQueriesFile(t)
 	in := []savedQuery{
-		{Name: "cleanup", Repo: "o/r", Type: "pr", Action: "unsubscribe", Tags: []string{"cleanup"}},
-		{Name: "triage", State: "open"},
+		{Name: "cleanup", Repo: "o/r", Type: "pr", Author: "dependabot", Action: "unsubscribe", Tags: []string{"cleanup"}},
+		{Name: "triage", State: "open", Author: "alice"},
 	}
 	if err := saveQueries(in); err != nil {
 		t.Fatalf("saveQueries: %v", err)
@@ -44,7 +44,7 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("expected 2 queries, got %d", len(out))
 	}
-	if out[0].Name != "cleanup" || out[0].Action != "unsubscribe" || out[0].Repo != "o/r" {
+	if out[0].Name != "cleanup" || out[0].Action != "unsubscribe" || out[0].Repo != "o/r" || out[0].Author != "dependabot" {
 		t.Errorf("unexpected first query: %+v", out[0])
 	}
 	if len(out[0].Tags) != 1 || out[0].Tags[0] != "cleanup" {
@@ -53,7 +53,7 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	if out[0].Scope != "" || out[0].All {
 		t.Errorf("unexpected first query scope: %+v", out[0])
 	}
-	if out[1].State != "open" || out[1].Scope != "" || out[1].All {
+	if out[1].State != "open" || out[1].Author != "alice" || out[1].Scope != "" || out[1].All {
 		t.Errorf("unexpected second query: %+v", out[1])
 	}
 
@@ -63,6 +63,11 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	}
 	if strings.Contains(string(data), "\n    all:") || strings.Contains(string(data), "\n    scope:") {
 		t.Errorf("new schema unexpectedly wrote a legacy scope field:\n%s", data)
+	}
+	for _, field := range []string{"author: dependabot", "author: alice"} {
+		if !strings.Contains(string(data), field) {
+			t.Errorf("saved YAML missing %q:\n%s", field, data)
+		}
 	}
 }
 
@@ -181,6 +186,7 @@ func TestOptionsSavedQueryConversion(t *testing.T) {
 		{"done", options{markDone: true}, "done"},
 		{"unsub", options{unsubscribe: true}, "unsubscribe"},
 		{"all ignored", options{all: true}, ""},
+		{"author", options{author: "Alice"}, ""},
 		{"none", options{}, ""},
 	}
 	for _, c := range cases {
@@ -202,6 +208,9 @@ func TestOptionsSavedQueryConversion(t *testing.T) {
 			if got.all {
 				t.Errorf("saved query unexpectedly enabled all notifications: %+v", got)
 			}
+			if q.Author != c.opts.author || got.author != c.opts.author {
+				t.Errorf("author round-trip mismatch: query = %+v, options = %+v", q, got)
+			}
 		})
 	}
 }
@@ -209,14 +218,14 @@ func TestOptionsSavedQueryConversion(t *testing.T) {
 func TestSavedQueryToOptionsFilters(t *testing.T) {
 	q := savedQuery{
 		Repo: "o/r", Filter: "bug", Type: "issue", State: "open",
-		Draft: true, Scope: savedQueryScopeUnread,
+		Draft: true, Scope: savedQueryScopeUnread, Author: "alice",
 	}
 	opts, err := q.toOptions()
 	if err != nil {
 		t.Fatalf("toOptions: %v", err)
 	}
 	if opts.repo != "o/r" || opts.filter != "bug" || opts.itemType != "issue" ||
-		opts.state != "open" || !opts.draft || opts.all {
+		opts.state != "open" || !opts.draft || opts.all || opts.author != "alice" {
 		t.Errorf("toOptions did not map filters: %+v", opts)
 	}
 }
@@ -231,6 +240,7 @@ func TestSavedQueryDescriptionPartsLegacyScope(t *testing.T) {
 		{"legacy unread hidden", savedQuery{Name: "unread", Scope: savedQueryScopeUnread}, "(no filters)"},
 		{"legacy all bool", savedQuery{Name: "all", All: true}, "all: true (unsupported; remove before running)"},
 		{"legacy all scope", savedQuery{Name: "all", Scope: savedQueryScopeAll}, "scope: all (unsupported; remove before running)"},
+		{"author", savedQuery{Author: "alice"}, "author=alice"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parts, err := tc.query.descriptionParts()

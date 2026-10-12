@@ -60,6 +60,7 @@ The table columns are `REPOSITORY`, `TYPE`, `TITLE`, and `AGE` (a short relative
 | `-t`, `--type TYPE` | Keep only a subject type: `issue`, `pr`, `commit`, `release`, `discussion`, … (friendly aliases accepted) |
 | `--state STATE` | Keep only issues/PRs in a state: `open`, `closed`, `merged`, `not-planned`, `completed`. `closed` and `merged` are distinct: `closed` excludes merged PRs — use `merged` for those |
 | `--draft` | Keep only draft pull requests |
+| `--author LOGIN` | Keep only issues/PRs created by this GitHub login |
 | `--show-reason` | Include the `REASON` column in the table |
 | `-i`, `--interactive` | Open the interactive picker (see below) |
 | `--mark-read` | Mark the matching notifications as read |
@@ -73,6 +74,11 @@ Filters compose, except that `--all` cannot be combined with a mutating action o
 query. GitHub's REST API returns unread, read, and done threads when `all=true` without exposing
 which read threads are still in the inbox, so `--all` is only suitable for ad-hoc searching.
 
+The author filter matches the original issue/PR creator, not the latest commenter. Logins are
+exact and case-insensitive; `dependabot` and `dependabot[bot]` both work. Filtering is
+inclusion-only: `--author` excludes other subject types and unavailable authors, and negated
+values are not supported. It shares the batched GraphQL lookup used by state and draft filters.
+
 ## Examples
 
 ```bash
@@ -84,6 +90,9 @@ gh notifications --type issue --state open --filter auth
 
 # Draft PRs across everything
 gh notifications --draft
+
+# PRs created by a particular author
+gh notifications --type pr --author octocat
 
 # Issues that were closed as "not planned"
 gh notifications --type issue --state not-planned
@@ -121,7 +130,7 @@ repo".
 
 ```bash
 # Save a reusable query (filters + an optional action + tags)
-gh notifications save cleanup-bot-prs --repo octo-org/noisy --type pr --unsubscribe --tag cleanup
+gh notifications save cleanup-bot-prs --repo octo-org/noisy --type pr --author dependabot --unsubscribe --tag cleanup
 
 # List saved queries
 gh notifications list

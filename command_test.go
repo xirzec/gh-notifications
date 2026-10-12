@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -40,6 +42,7 @@ func TestRunHelp(t *testing.T) {
 				"delete <name>",
 				"edit",
 				"--mark-read",
+				"--author",
 			} {
 				if !strings.Contains(out.String(), want) {
 					t.Errorf("help missing %q:\n%s", want, out.String())
@@ -140,7 +143,7 @@ func TestSaveHelpOnlyDocumentsSupportedFlags(t *testing.T) {
 	if err := runWithIO([]string{"save", "--help"}, strings.NewReader(""), &out); err != nil {
 		t.Fatalf("runWithIO: %v", err)
 	}
-	for _, want := range []string{"--tag value", "--yes", "--mark-read"} {
+	for _, want := range []string{"--tag value", "--yes", "--mark-read", "--author"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("save help missing %q:\n%s", want, out.String())
 		}
@@ -220,6 +223,28 @@ func TestRunSaveRequiresName(t *testing.T) {
 	var out bytes.Buffer
 	if err := runSave([]string{"--repo", "o/r"}, strings.NewReader(""), &out); err == nil {
 		t.Error("expected error when name is missing")
+	}
+}
+
+func TestRunSaveAuthorFilters(t *testing.T) {
+	withTempQueriesFile(t)
+	var out bytes.Buffer
+	if err := runSave([]string{"triage", "--author", "alice"}, strings.NewReader(""), &out); err != nil {
+		t.Fatalf("runSave: %v", err)
+	}
+	queries, err := loadQueries()
+	if err != nil {
+		t.Fatalf("loadQueries: %v", err)
+	}
+	if len(queries) != 1 || queries[0].Author != "alice" {
+		t.Fatalf("saved queries = %+v", queries)
+	}
+	out.Reset()
+	if err := runListQueries(nil, &out); err != nil {
+		t.Fatalf("runListQueries: %v", err)
+	}
+	if !strings.Contains(out.String(), "  author=alice\n") {
+		t.Errorf("list output missing author: %s", out.String())
 	}
 }
 
@@ -326,10 +351,11 @@ func TestRunListQueriesFormatsMultiline(t *testing.T) {
 			Name:   "no-increment-versions",
 			Filter: "increment versions for",
 			All:    true,
+			Author: "dependabot",
 			Action: "unsubscribe",
 			Tags:   []string{"cleanup"},
 		},
-		{Name: "triage", Repo: "octo-org/docs", State: "open", Scope: savedQueryScopeUnread},
+		{Name: "triage", Repo: "octo-org/docs", State: "open", Author: "alice", Scope: savedQueryScopeUnread},
 	}
 	if err := saveQueries(queries); err != nil {
 		t.Fatalf("saveQueries: %v", err)
@@ -342,12 +368,14 @@ func TestRunListQueriesFormatsMultiline(t *testing.T) {
 	const want = `no-increment-versions
   all: true (unsupported; remove before running)
   filter="increment versions for"
+  author=dependabot
   action=unsubscribe
   tags=cleanup
 
 triage
   repo=octo-org/docs
   state=open
+  author=alice
 `
 	if out.String() != want {
 		t.Errorf("list output:\n%s\nwant:\n%s", out.String(), want)
@@ -533,6 +561,84 @@ func TestExecuteSavedQueryRejectsLegacyAll(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), `saved query "cleanup" contains legacy all: true`) {
 		t.Fatalf("executeSavedQuery error = %v, want legacy all error", err)
+	}
+}
+
+func TestExecuteSavedQueryAuthorFilters(t *testing.T) {
+	boom := errors.New("boom")
+	for _, tc := range []struct {
+		name   string
+		query  savedQuery
+		flags  runFlags
+		gqlErr error
+		want   []string
+	}{
+		{"include bot", savedQuery{Author: "dependabot"}, runFlags{assumeYes: true}, nil, []string{"DELETE notifications/threads/1"}},
+		{"bot suffix", savedQuery{Author: "dependabot[bot]"}, runFlags{assumeYes: true}, nil, []string{"DELETE notifications/threads/1"}},
+		{"include human", savedQuery{Author: "alice"}, runFlags{assumeYes: true}, nil, []string{"DELETE notifications/threads/2"}},
+		{"dry run", savedQuery{Author: "alice"}, runFlags{dryRun: true, assumeYes: true}, nil, nil},
+		{"aborted", savedQuery{Author: "alice"}, runFlags{}, nil, nil},
+		{"lookup error", savedQuery{Author: "alice"}, runFlags{assumeYes: true}, boom, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeGQL{
+				items: map[int]itemDetail{
+					1: {state: "open", author: "dependabot[bot]"},
+					2: {state: "open", author: "Alice"},
+				},
+				err: tc.gqlErr,
+			}
+			withFakeGraphQLClient(t, fake, nil)
+			doer := &recordingDoer{body: `[
+				{"id":"1","subject":{"type":"PullRequest","url":"https://api.github.com/repos/o/r/pulls/1"}},
+				{"id":"2","subject":{"type":"PullRequest","url":"https://api.github.com/repos/o/r/pulls/2"}},
+				{"id":"3","subject":{"type":"Release"}}
+			]`}
+			q := tc.query
+			q.Name, q.Type, q.Action = "triage", "pr", "done"
+			var out bytes.Buffer
+			err := executeSavedQuery(newRateLimitTracker(doer), q, tc.flags, strings.NewReader("n\n"), &out)
+			if !errors.Is(err, tc.gqlErr) {
+				t.Fatalf("executeSavedQuery error = %v, want %v", err, tc.gqlErr)
+			}
+			want := append([]string{"GET notifications?per_page=50"}, tc.want...)
+			if !slices.Equal(doer.calls, want) {
+				t.Errorf("REST calls = %v, want %v", doer.calls, want)
+			}
+			if fake.calls != 1 {
+				t.Errorf("GraphQL calls = %d, want 1", fake.calls)
+			}
+		})
+	}
+}
+
+func TestExecuteSavedQueryRejectsMissingItemFields(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		query   savedQuery
+		item    string
+		wantErr string
+	}{
+		{"missing state", savedQuery{State: "open"}, `{"isDraft":false,"author":{"login":"alice"}}`, "missing state"},
+		{"null state", savedQuery{State: "open"}, `{"state":null,"isDraft":false,"author":{"login":"alice"}}`, "missing state"},
+		{"missing draft", savedQuery{Draft: true}, `{"state":"OPEN","author":{"login":"alice"}}`, "missing isDraft"},
+		{"null draft", savedQuery{Draft: true}, `{"state":"OPEN","isDraft":null,"author":{"login":"alice"}}`, "missing isDraft"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeGQL{raw: fmt.Sprintf(`{"i0":{"issueOrPullRequest":%s}}`, tc.item)}
+			withFakeGraphQLClient(t, fake, nil)
+			doer := &recordingDoer{body: `[{"id":"1","subject":{"type":"PullRequest","url":"https://api.github.com/repos/o/r/pulls/1"}}]`}
+			q := tc.query
+			q.Name, q.Action = "triage", "done"
+			var out bytes.Buffer
+			err := executeSavedQuery(newRateLimitTracker(doer), q, runFlags{assumeYes: true}, strings.NewReader("y\n"), &out)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("executeSavedQuery error = %v, want %q", err, tc.wantErr)
+			}
+			if !slices.Equal(doer.calls, []string{"GET notifications?per_page=50"}) {
+				t.Errorf("malformed details caused unexpected requests: %v", doer.calls)
+			}
+		})
 	}
 }
 

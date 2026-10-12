@@ -12,6 +12,7 @@ import (
 // recordingDoer captures the REST requests issued against it.
 type recordingDoer struct {
 	calls []string
+	body  string
 	err   error
 }
 
@@ -21,7 +22,7 @@ func (d *recordingDoer) Request(method, path string, body io.Reader) (*http.Resp
 		return nil, d.err
 	}
 	return &http.Response{
-		Body:   io.NopCloser(strings.NewReader("")),
+		Body:   io.NopCloser(strings.NewReader(d.body)),
 		Header: http.Header{},
 	}, nil
 }
