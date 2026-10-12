@@ -612,6 +612,36 @@ func TestExecuteSavedQueryAuthorFilters(t *testing.T) {
 	}
 }
 
+func TestExecuteSavedQueryRejectsMissingItemFields(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		query   savedQuery
+		item    string
+		wantErr string
+	}{
+		{"missing state", savedQuery{State: "open"}, `{"isDraft":false,"author":{"login":"alice"}}`, "missing state"},
+		{"null state", savedQuery{State: "open"}, `{"state":null,"isDraft":false,"author":{"login":"alice"}}`, "missing state"},
+		{"missing draft", savedQuery{Draft: true}, `{"state":"OPEN","author":{"login":"alice"}}`, "missing isDraft"},
+		{"null draft", savedQuery{Draft: true}, `{"state":"OPEN","isDraft":null,"author":{"login":"alice"}}`, "missing isDraft"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeGQL{raw: fmt.Sprintf(`{"i0":{"issueOrPullRequest":%s}}`, tc.item)}
+			withFakeGraphQLClient(t, fake, nil)
+			doer := &recordingDoer{body: `[{"id":"1","subject":{"type":"PullRequest","url":"https://api.github.com/repos/o/r/pulls/1"}}]`}
+			q := tc.query
+			q.Name, q.Action = "triage", "done"
+			var out bytes.Buffer
+			err := executeSavedQuery(newRateLimitTracker(doer), q, runFlags{assumeYes: true}, strings.NewReader("y\n"), &out)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("executeSavedQuery error = %v, want %q", err, tc.wantErr)
+			}
+			if !slices.Equal(doer.calls, []string{"GET notifications?per_page=50"}) {
+				t.Errorf("malformed details caused unexpected requests: %v", doer.calls)
+			}
+		})
+	}
+}
+
 func TestEditorCommand(t *testing.T) {
 	cmd, err := editorCommand("code --wait", "/tmp/notifications.yml")
 	if err != nil {

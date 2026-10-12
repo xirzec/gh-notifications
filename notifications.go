@@ -426,9 +426,9 @@ func fetchItemDetails(doer graphQLDoer, notifications []Notification) (map[int]i
 				return nil, quota, fmt.Errorf("fetching item details for %s/%s#%d: missing item response", e.ref.owner, e.ref.repo, e.ref.number)
 			}
 			var item *struct {
-				State       string          `json:"state"`
+				State       *string         `json:"state"`
 				StateReason string          `json:"stateReason"`
-				IsDraft     bool            `json:"isDraft"`
+				IsDraft     *bool           `json:"isDraft"`
 				Author      json.RawMessage `json:"author"`
 			}
 			if err := json.Unmarshal(node.IssueOrPullRequest, &item); err != nil {
@@ -436,6 +436,12 @@ func fetchItemDetails(doer graphQLDoer, notifications []Notification) (map[int]i
 			}
 			if item == nil {
 				continue
+			}
+			if item.State == nil {
+				return nil, quota, fmt.Errorf("fetching item details for %s/%s#%d: missing state", e.ref.owner, e.ref.repo, e.ref.number)
+			}
+			if strings.EqualFold(notifications[e.idx].Subject.Type, "PullRequest") && item.IsDraft == nil {
+				return nil, quota, fmt.Errorf("fetching item details for %s/%s#%d: missing isDraft", e.ref.owner, e.ref.repo, e.ref.number)
 			}
 			if len(item.Author) == 0 {
 				return nil, quota, fmt.Errorf("fetching item details for %s/%s#%d: missing author response", e.ref.owner, e.ref.repo, e.ref.number)
@@ -447,9 +453,9 @@ func fetchItemDetails(doer graphQLDoer, notifications []Notification) (map[int]i
 				return nil, quota, fmt.Errorf("decoding author for %s/%s#%d: %w", e.ref.owner, e.ref.repo, e.ref.number, err)
 			}
 			detail := itemDetail{
-				state:       strings.ToLower(item.State),
+				state:       strings.ToLower(*item.State),
 				stateReason: strings.ToLower(item.StateReason),
-				isDraft:     item.IsDraft,
+				isDraft:     item.IsDraft != nil && *item.IsDraft,
 			}
 			if author != nil {
 				if normalizeAuthor(author.Login) == "" {

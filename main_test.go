@@ -570,9 +570,9 @@ func TestFetchItemDetailsErrors(t *testing.T) {
 		{"missing alias", fakeGQL{raw: `{}`}, "missing response"},
 		{"invalid item", fakeGQL{raw: `{"i0":"unexpected"}`}, "decoding item details for o/r#1"},
 		{"missing item", fakeGQL{raw: `{"i0":{}}`}, "missing item response"},
-		{"missing author", fakeGQL{raw: `{"i0":{"issueOrPullRequest":{"state":"OPEN"}}}`}, "missing author response"},
-		{"invalid author", fakeGQL{raw: `{"i0":{"issueOrPullRequest":{"state":"OPEN","author":"dependabot"}}}`}, "decoding author for o/r#1"},
-		{"missing login", fakeGQL{raw: `{"i0":{"issueOrPullRequest":{"state":"OPEN","author":{}}}}`}, "missing author login"},
+		{"missing author", fakeGQL{raw: `{"i0":{"issueOrPullRequest":{"state":"OPEN","isDraft":false}}}`}, "missing author response"},
+		{"invalid author", fakeGQL{raw: `{"i0":{"issueOrPullRequest":{"state":"OPEN","isDraft":false,"author":"dependabot"}}}`}, "decoding author for o/r#1"},
+		{"missing login", fakeGQL{raw: `{"i0":{"issueOrPullRequest":{"state":"OPEN","isDraft":false,"author":{}}}}`}, "missing author login"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			details, _, err := fetchItemDetails(&tc.fake, notifications)
@@ -581,6 +581,47 @@ func TestFetchItemDetailsErrors(t *testing.T) {
 			}
 			if details != nil {
 				t.Errorf("failed lookup returned partial details: %+v", details)
+			}
+		})
+	}
+}
+
+func TestFetchItemDetailsRequiredFields(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		subjectType string
+		item        string
+		wantErr     string
+		wantDraft   bool
+	}{
+		{"issue missing state", "Issue", `{"author":{"login":"alice"}}`, "missing state", false},
+		{"issue null state", "Issue", `{"state":null,"author":{"login":"alice"}}`, "missing state", false},
+		{"PR missing state", "PullRequest", `{"isDraft":false,"author":{"login":"alice"}}`, "missing state", false},
+		{"PR null state", "PullRequest", `{"state":null,"isDraft":false,"author":{"login":"alice"}}`, "missing state", false},
+		{"PR missing draft", "PullRequest", `{"state":"OPEN","author":{"login":"alice"}}`, "missing isDraft", false},
+		{"PR null draft", "PullRequest", `{"state":"OPEN","isDraft":null,"author":{"login":"alice"}}`, "missing isDraft", false},
+		{"ready PR", "PullRequest", `{"state":"OPEN","isDraft":false,"author":{"login":"alice"}}`, "", false},
+		{"draft PR", "PullRequest", `{"state":"OPEN","isDraft":true,"author":{"login":"alice"}}`, "", true},
+		{"issue without draft", "Issue", `{"state":"OPEN","author":{"login":"alice"}}`, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			notifications := []Notification{
+				{Subject: NotificationSubject{Type: tc.subjectType, URL: "https://api.github.com/repos/o/r/issues/1"}},
+			}
+			fake := &fakeGQL{raw: fmt.Sprintf(`{"i0":{"issueOrPullRequest":%s}}`, tc.item)}
+			details, _, err := fetchItemDetails(fake, notifications)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) || details != nil {
+					t.Fatalf("details = %v, error = %v, want %q", details, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("fetchItemDetails: %v", err)
+			}
+			detail, ok := details[0]
+			if !ok || detail.state != "open" || detail.author != "alice" || detail.isDraft != tc.wantDraft {
+				t.Errorf("detail = %+v, present = %v, want draft = %v", detail, ok, tc.wantDraft)
 			}
 		})
 	}
@@ -737,7 +778,7 @@ func TestFetchItemDetailsUnavailableAuthor(t *testing.T) {
 		{ID: "1", Subject: NotificationSubject{Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/1"}},
 	}
 	for _, raw := range []string{
-		`{"i0":{"issueOrPullRequest":{"state":"OPEN","author":null}}}`,
+		`{"i0":{"issueOrPullRequest":{"state":"OPEN","isDraft":false,"author":null}}}`,
 		`{"i0":{"issueOrPullRequest":null}}`,
 		`{"i0":null}`,
 	} {
