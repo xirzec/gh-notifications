@@ -7,11 +7,302 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestParseArgsUpdated(t *testing.T) {
+	for _, value := range []string{">30", "<5", ">1", "<001", ">18446744073709551615"} {
+		for _, args := range [][]string{{"--updated", value}, {"--updated=" + value}} {
+			opts, err := parseArgs(args)
+			if err != nil || opts.updated != value {
+				t.Errorf("parseArgs(%q) = %+v, %v", args, opts, err)
+			}
+		}
+	}
+	for _, value := range []string{
+		"", "30", ">", "<", ">0", "<0", ">-1", "<+1", ">1.5",
+		">=30", "<=5", "=5", ">>5", ">five", " >30", "> 30", ">30 ",
+		">18446744073709551616",
+	} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := parseArgs([]string{"--updated", value}); err == nil {
+				t.Fatal("expected invalid --updated error")
+			}
+			if err := validateOptions(options{updated: value}); value != "" && err == nil {
+				t.Fatal("validateOptions accepted invalid expression")
+			}
+		})
+	}
+	if _, err := parseArgs([]string{"--updated"}); err == nil {
+		t.Error("missing argument accepted")
+	}
+	if opts, err := parseArgs(nil); err != nil || opts.updated != "" {
+		t.Errorf("omitted flag: %+v, %v", opts, err)
+	}
+	opts, err := parseArgs([]string{"--updated", ">30", "--updated", "<5"})
+	if err != nil || opts.updated != "<5" {
+		t.Errorf("repeated flag: %+v, %v", opts, err)
+	}
+}
+
+func TestFilterByUpdated(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 500, time.UTC)
+	cutoff := now.Add(-5 * 24 * time.Hour)
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+		old  bool
+		new  bool
+	}{
+		{"exact boundary", cutoff, false, false},
+		{"one nanosecond older", cutoff.Add(-time.Nanosecond), true, false},
+		{"one nanosecond newer", cutoff.Add(time.Nanosecond), false, true},
+		{"fractional day older", cutoff.Add(-12 * time.Hour), true, false},
+		{"fractional day newer", cutoff.Add(12 * time.Hour), false, true},
+		{"future", now.Add(time.Hour), false, true},
+		{"now", now, false, true},
+		{"missing", time.Time{}, false, false},
+		{"ancient RFC3339 date", time.Date(1, 1, 2, 0, 0, 0, 0, time.UTC), true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, comparison := range []struct {
+				expr string
+				want bool
+			}{{">5", tc.old}, {"<5", tc.new}} {
+				filter, err := parseUpdatedFilter(comparison.expr)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := filterByUpdated([]Notification{{ID: "1", UpdatedAt: tc.at}}, filter, now)
+				if (len(got) == 1) != comparison.want {
+					t.Errorf("%s: matched %v, want %v", comparison.expr, len(got) == 1, comparison.want)
+				}
+			}
+		})
+	}
+	for _, expr := range []string{">18446744073709551615", "<18446744073709551615"} {
+		filter, err := parseUpdatedFilter(expr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := filterByUpdated(nil, filter, now); len(got) != 0 {
+			t.Errorf("empty input: %v", got)
+		}
+		got := filterByUpdated([]Notification{{UpdatedAt: cutoff}}, filter, now)
+		if (len(got) == 1) != (expr[0] == '<') {
+			t.Errorf("large threshold %s matched %v", expr, got)
+		}
+	}
+}
+
+func TestUpdatedRFC3339(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 500, time.UTC)
+	doer := &recordingDoer{body: `[
+		{"id":"equal","updated_at":"2026-10-14T14:00:00.000000500+02:00"},
+		{"id":"older","updated_at":"2026-10-14T12:00:00.000000499Z"},
+		{"id":"newer","updated_at":"2026-10-14T12:00:00.000000501Z"},
+		{"id":"missing"},
+		{"id":"null","updated_at":null}
+	]`}
+	notifications, err := fetchNotifications(doer, options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		expr string
+		id   string
+	}{{">5", "older"}, {"<5", "newer"}} {
+		filter, err := parseUpdatedFilter(tc.expr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := filterByUpdated(notifications, filter, now)
+		if len(got) != 1 || got[0].ID != tc.id {
+			t.Errorf("%s: got %+v, want %s", tc.expr, got, tc.id)
+		}
+	}
+}
+
+func TestLoadFilteredNotificationsUpdated(t *testing.T) {
+	now := time.Now()
+	notifications := []Notification{
+		{ID: "1", UpdatedAt: now.Add(-40 * 24 * time.Hour), Subject: NotificationSubject{Title: "Fix old", Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/1"}},
+		{ID: "2", UpdatedAt: now.Add(-time.Hour), Subject: NotificationSubject{Title: "Fix recent", Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/2"}},
+		{ID: "3", UpdatedAt: now.Add(-40 * 24 * time.Hour), Subject: NotificationSubject{Title: "Other old", Type: "Issue"}},
+		{ID: "4", UpdatedAt: now.Add(-40 * 24 * time.Hour), Subject: NotificationSubject{Title: "Fix release", Type: "Release"}},
+		{ID: "5", Subject: NotificationSubject{Title: "Fix missing", Type: "PullRequest"}},
+	}
+	body, err := json.Marshal(notifications)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		opts options
+		ids  []string
+		gql  []int
+	}{
+		{"disabled", options{}, []string{"1", "2", "3", "4", "5"}, nil},
+		{"older REST only", options{updated: ">30"}, []string{"1", "3", "4"}, nil},
+		{"newer REST only", options{updated: "<5"}, []string{"2"}, nil},
+		{"no matches", options{updated: ">90"}, nil, nil},
+		{"combined", options{updated: ">30", filter: "Fix", itemType: "pr", state: "open", draft: true, author: "alice"}, []string{"1"}, []int{1}},
+		{"no GraphQL candidates", options{updated: ">90", author: "alice"}, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeGQL{state: "OPEN", draft: true, author: "alice"}
+			prev := newGraphQLClient
+			newGraphQLClient = func() (graphQLDoer, error) {
+				if tc.opts.state == "" && tc.opts.author == "" {
+					t.Fatal("local filter initialized GraphQL client")
+				}
+				return fake, nil
+			}
+			t.Cleanup(func() { newGraphQLClient = prev })
+			doer := &recordingDoer{body: string(body)}
+			got, err := loadFilteredNotifications(newRateLimitTracker(doer), tc.opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ids []string
+			for _, n := range got {
+				ids = append(ids, n.ID)
+			}
+			if !slices.Equal(ids, tc.ids) || !slices.Equal(fake.numbers, tc.gql) {
+				t.Errorf("IDs %v, GraphQL items %v; want %v, %v", ids, fake.numbers, tc.ids, tc.gql)
+			}
+			if !slices.Equal(doer.calls, []string{"GET notifications?per_page=50"}) {
+				t.Errorf("unexpected requests: %v", doer.calls)
+			}
+		})
+	}
+	doer := &recordingDoer{}
+	if _, err := loadFilteredNotifications(newRateLimitTracker(doer), options{updated: ">0"}); err == nil || len(doer.calls) != 0 {
+		t.Errorf("invalid expression: error %v, requests %v", err, doer.calls)
+	}
+}
+
+func TestUpdatedSavedQueries(t *testing.T) {
+	withTempQueriesFile(t)
+	var out bytes.Buffer
+	for _, expr := range []string{">0", "<0", "", "30", ">1.5"} {
+		if err := runSave([]string{"invalid", "--updated", expr}, strings.NewReader(""), &out); err == nil {
+			t.Errorf("save accepted %q", expr)
+		}
+		if _, err := os.Stat(queriesFilePath()); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("invalid save changed query file: %v", err)
+		}
+	}
+	if err := runSave([]string{"stale", "--updated", ">30"}, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	queries, err := loadQueries()
+	if err != nil || len(queries) != 1 || queries[0].Updated != ">30" {
+		t.Fatalf("saved query: %+v, %v", queries, err)
+	}
+	opts, err := queries[0].toOptions()
+	if err != nil || opts.updated != ">30" || optionsToSavedQuery("stale", opts).Updated != ">30" {
+		t.Fatalf("options conversion: %+v, %v", opts, err)
+	}
+	out.Reset()
+	if err := runListQueries(nil, &out); err != nil || !strings.Contains(out.String(), "updated=>30") {
+		t.Errorf("list: %q, %v", out.String(), err)
+	}
+	if err := saveQueries([]savedQuery{{Name: "old"}}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(queriesFilePath())
+	if err != nil || strings.Contains(string(data), "updated:") {
+		t.Errorf("empty updated field persisted: %s, %v", data, err)
+	}
+	queries, err = loadQueries()
+	if err != nil || len(queries) != 1 || queries[0].Updated != "" {
+		t.Fatalf("legacy query: %+v, %v", queries, err)
+	}
+}
+
+func TestExecuteSavedQueryUpdated(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name  string
+		flags runFlags
+		input string
+		tail  []string
+	}{
+		{"confirmed", runFlags{}, "y\n", []string{"DELETE notifications/threads/old"}},
+		{"assume yes", runFlags{assumeYes: true}, "", []string{"DELETE notifications/threads/old"}},
+		{"dry run", runFlags{dryRun: true, assumeYes: true}, "", nil},
+		{"aborted", runFlags{}, "n\n", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			notifications := []Notification{
+				{ID: "old", UpdatedAt: now.Add(-40 * 24 * time.Hour)},
+				{ID: "recent", UpdatedAt: now.Add(-time.Hour)},
+				{ID: "missing"},
+			}
+			body, err := json.Marshal(notifications)
+			if err != nil {
+				t.Fatal(err)
+			}
+			withFakeGraphQLClient(t, nil, errors.New("unexpected GraphQL initialization"))
+			doer := &recordingDoer{body: string(body)}
+			q := savedQuery{Name: "stale", Updated: ">30", Action: "done"}
+			err = executeSavedQuery(newRateLimitTracker(doer), q, tc.flags, strings.NewReader(tc.input), io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := append([]string{"GET notifications?per_page=50"}, tc.tail...)
+			if !slices.Equal(doer.calls, want) {
+				t.Errorf("requests %v, want %v", doer.calls, want)
+			}
+		})
+	}
+	doer := &recordingDoer{body: `[{"id":"bad","updated_at":"invalid"}]`}
+	err := executeSavedQuery(newRateLimitTracker(doer), savedQuery{Name: "bad", Updated: ">30", Action: "done"}, runFlags{assumeYes: true}, strings.NewReader(""), io.Discard)
+	if err == nil || !slices.Equal(doer.calls, []string{"GET notifications?per_page=50"}) {
+		t.Errorf("malformed timestamp: %v, requests %v", err, doer.calls)
+	}
+}
+
+func TestSavedQueryUpdatedValidation(t *testing.T) {
+	withTempQueriesFile(t)
+	queries := []savedQuery{
+		{Name: "valid", Updated: ">30", Tags: []string{"cleanup"}},
+		{Name: "invalid", Updated: ">0", Tags: []string{"cleanup"}},
+	}
+	if err := saveQueries(queries); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"invalid"}, {"--tag", "cleanup"}} {
+		err := runSavedQuery(args, strings.NewReader(""), io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "invalid --updated") {
+			t.Errorf("run %v: error %v", args, err)
+		}
+	}
+	doer := &recordingDoer{}
+	err := executeSavedQuery(newRateLimitTracker(doer), queries[1], runFlags{}, strings.NewReader(""), io.Discard)
+	if err == nil || len(doer.calls) != 0 {
+		t.Errorf("invalid query: %v, requests %v", err, doer.calls)
+	}
+}
+
+func TestUpdatedHelp(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"save", "--help"}} {
+		var out bytes.Buffer
+		if err := runWithIO(args, strings.NewReader(""), &out); err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"--updated", "positive integer", "days", "prefix required", `">30"`, `"<5"`} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("%v help missing %q", args, want)
+			}
+		}
+	}
+}
 
 func TestRelativeAge(t *testing.T) {
 	now := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)

@@ -24,14 +24,15 @@ type savedQuery struct {
 	Name string `yaml:"name"`
 	// Scope and All are retained only to detect history-search settings written
 	// by older versions. New saved queries omit both.
-	Scope  string `yaml:"scope,omitempty"`
-	All    bool   `yaml:"all,omitempty"`
-	Repo   string `yaml:"repo,omitempty"`
-	Filter string `yaml:"filter,omitempty"`
-	Type   string `yaml:"type,omitempty"`
-	State  string `yaml:"state,omitempty"`
-	Draft  bool   `yaml:"draft,omitempty"`
-	Author string `yaml:"author,omitempty"`
+	Scope   string `yaml:"scope,omitempty"`
+	All     bool   `yaml:"all,omitempty"`
+	Repo    string `yaml:"repo,omitempty"`
+	Filter  string `yaml:"filter,omitempty"`
+	Type    string `yaml:"type,omitempty"`
+	State   string `yaml:"state,omitempty"`
+	Draft   bool   `yaml:"draft,omitempty"`
+	Author  string `yaml:"author,omitempty"`
+	Updated string `yaml:"updated,omitempty"`
 	// Action, when set, is one of "read", "done", or "unsubscribe".
 	Action string   `yaml:"action,omitempty"`
 	Tags   []string `yaml:"tags,omitempty"`
@@ -192,15 +193,16 @@ func actionFromOptions(opts options) string {
 // optionsToSavedQuery builds a savedQuery from parsed options.
 func optionsToSavedQuery(name string, opts options) savedQuery {
 	return savedQuery{
-		Name:   name,
-		Repo:   opts.repo,
-		Filter: opts.filter,
-		Type:   opts.itemType,
-		State:  opts.state,
-		Draft:  opts.draft,
-		Author: opts.author,
-		Action: actionFromOptions(opts),
-		Tags:   opts.tags,
+		Name:    name,
+		Repo:    opts.repo,
+		Filter:  opts.filter,
+		Type:    opts.itemType,
+		State:   opts.state,
+		Draft:   opts.draft,
+		Author:  opts.author,
+		Updated: opts.updated,
+		Action:  actionFromOptions(opts),
+		Tags:    opts.tags,
 	}
 }
 
@@ -221,6 +223,7 @@ func (q savedQuery) toOptions() (options, error) {
 		state:    q.State,
 		draft:    q.Draft,
 		author:   q.Author,
+		updated:  q.Updated,
 	}
 	switch q.Action {
 	case "read":
@@ -261,6 +264,9 @@ func (q savedQuery) descriptionParts() ([]string, error) {
 	}
 	if q.Author != "" {
 		parts = append(parts, "author="+q.Author)
+	}
+	if q.Updated != "" {
+		parts = append(parts, "updated="+q.Updated)
 	}
 	if q.Action != "" {
 		parts = append(parts, "action="+q.Action)

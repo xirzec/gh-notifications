@@ -64,6 +64,8 @@ type options struct {
 	draft bool
 	// author matches the issue/PR creator's GitHub login.
 	author string
+	// updated compares the elapsed update age against a positive day count.
+	updated string
 	// interactive, when true, prompts the user to pick a notification to
 	// open in a web browser instead of printing the table.
 	interactive bool
@@ -108,6 +110,13 @@ func addSavedQueryFilterFlags(fs *flag.FlagSet, opts *options) {
 	fs.StringVar(&opts.state, "state", "", "Keep only issues/PRs in this state (open, closed, merged, not-planned, completed); closed excludes merged PRs")
 	fs.BoolVar(&opts.draft, "draft", false, "Keep only draft pull requests")
 	fs.StringVar(&opts.author, "author", "", "Keep only issues/PRs created by this GitHub login (case-insensitive; [bot] suffix optional)")
+	fs.Func("updated", `Keep notifications updated more (>) or less (<) than a positive integer number of days ago; prefix required (e.g. ">30" or "<5")`, func(value string) error {
+		if _, err := parseUpdatedFilter(value); err != nil {
+			return err
+		}
+		opts.updated = value
+		return nil
+	})
 }
 
 func addFilterFlags(fs *flag.FlagSet, opts *options) {
@@ -144,6 +153,11 @@ func newFlagSet(name string, opts *options) *flag.FlagSet {
 
 // validateOptions checks parsed options for invalid or conflicting values.
 func validateOptions(opts options) error {
+	if opts.updated != "" {
+		if _, err := parseUpdatedFilter(opts.updated); err != nil {
+			return err
+		}
+	}
 	if opts.repo != "" {
 		if !strings.Contains(strings.Trim(opts.repo, "/"), "/") || strings.Count(opts.repo, "/") != 1 {
 			return fmt.Errorf("invalid repository %q: expected OWNER/REPO format", opts.repo)
@@ -199,6 +213,58 @@ func filterByTitle(notifications []Notification, filter string) []Notification {
 	filtered := make([]Notification, 0, len(notifications))
 	for _, n := range notifications {
 		if strings.Contains(strings.ToLower(n.Subject.Title), needle) {
+			filtered = append(filtered, n)
+		}
+	}
+	return filtered
+}
+
+type updatedFilter struct {
+	operator byte
+	days     uint64
+}
+
+func parseUpdatedFilter(value string) (updatedFilter, error) {
+	invalid := func() (updatedFilter, error) {
+		return updatedFilter{}, fmt.Errorf("invalid --updated %q: expected > or < followed by a positive integer number of days (for example, \">30\" or \"<5\")", value)
+	}
+	if len(value) < 2 || (value[0] != '>' && value[0] != '<') {
+		return invalid()
+	}
+	for _, digit := range value[1:] {
+		if digit < '0' || digit > '9' {
+			return invalid()
+		}
+	}
+	days, err := strconv.ParseUint(value[1:], 10, 64)
+	if err != nil || days == 0 {
+		return invalid()
+	}
+	return updatedFilter{operator: value[0], days: days}, nil
+}
+
+func filterByUpdated(notifications []Notification, filter updatedFilter, now time.Time) []Notification {
+	const secondsPerDay = 24 * 60 * 60
+	filtered := make([]Notification, 0, len(notifications))
+	for _, n := range notifications {
+		if n.UpdatedAt.IsZero() {
+			continue
+		}
+		// Compare seconds and nanoseconds separately to avoid duration overflow
+		// and preserve strict boundaries without rounding elapsed days.
+		seconds := now.Unix() - n.UpdatedAt.Unix()
+		nanos := now.Nanosecond() - n.UpdatedAt.Nanosecond()
+		if nanos < 0 {
+			seconds--
+			nanos += int(time.Second)
+		}
+		newer, older := seconds < 0, false
+		if seconds >= 0 {
+			days := uint64(seconds / secondsPerDay)
+			newer = days < filter.days
+			older = days > filter.days || (days == filter.days && (seconds%secondsPerDay != 0 || nanos != 0))
+		}
+		if (filter.operator == '<' && newer) || (filter.operator == '>' && older) {
 			filtered = append(filtered, n)
 		}
 	}
@@ -602,10 +668,18 @@ func relativeAge(t, now time.Time) string {
 }
 
 // loadFilteredNotifications fetches the authenticated user's notifications and
-// applies all of opts' filters (title, type, and the batched GraphQL
+// applies all of opts' filters (title, type, update age, and the batched GraphQL
 // state/draft/author filters), returning the resulting slice. REST and GraphQL
 // quota are recorded on the tracker.
 func loadFilteredNotifications(tracker *rateLimitTracker, opts options) ([]Notification, error) {
+	var updated updatedFilter
+	if opts.updated != "" {
+		var err error
+		updated, err = parseUpdatedFilter(opts.updated)
+		if err != nil {
+			return nil, err
+		}
+	}
 	notifications, err := fetchNotifications(tracker, opts)
 	if err != nil {
 		return nil, err
@@ -613,6 +687,9 @@ func loadFilteredNotifications(tracker *rateLimitTracker, opts options) ([]Notif
 
 	notifications = filterByTitle(notifications, opts.filter)
 	notifications = filterByType(notifications, opts.itemType)
+	if opts.updated != "" {
+		notifications = filterByUpdated(notifications, updated, time.Now())
+	}
 	if opts.state != "" || opts.draft || opts.author != "" {
 		gqlClient, err := newGraphQLClient()
 		if err != nil {

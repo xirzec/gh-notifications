@@ -149,6 +149,33 @@ gh notifications --author "dependabot[bot]" --interactive
 - Failed or malformed item-detail lookups abort the command with an error before any mutating action is taken
 - The filter can be saved in queries as `author`
 
+#### Filtering by update age
+
+```bash
+gh notifications --updated ">30"
+gh notifications --updated "<5"
+gh notifications --type pr --updated ">30" --mark-done --dry-run
+```
+
+- `--updated EXPR` requires a `>` or `<` prefix followed by a positive integer
+  number of days; zero, negative, decimal, empty, and malformed values fail with
+  an error before fetching notifications
+- `">30"` means strictly older than 30 days; `"<5"` means strictly newer than
+  5 days. An age of exactly 5 days matches neither `">5"` nor `"<5"`
+- Days are elapsed 24-hour periods, not rounded whole days or calendar days;
+  an age of 30.5 days matches `">30"`
+- Uses the notification's RFC3339 `updated_at` timestamp, already decoded from
+  the REST notifications response; no additional API calls or GraphQL lookup
+  are needed for this filter alone
+- Applied locally before any optional GraphQL issue/PR detail lookup and
+  composed with all other filters, interactive mode, and mutating actions
+- Missing or null update timestamps are excluded when the filter is active;
+  malformed timestamps retain the existing fetch error behavior
+- Future timestamps have negative elapsed age and match newer-than comparisons
+- With the flag omitted, notification handling is unchanged
+- Quote expressions to prevent `<` and `>` from being treated as shell redirection
+- Saved queries store the expression as `updated` and evaluate age when run
+
 ### Open a Notification in the Browser
 
 Interactively pick a notification and open it in the default web browser.
@@ -184,7 +211,7 @@ gh notifications --repo OWNER/REPO --state open --mark-read
 gh notifications --mark-read --dry-run
 ```
 
-- Operates on the notifications left after all filters (`--repo`, `--filter`, `--type`, `--state`, `--draft`, `--author`) are applied
+- Operates on the notifications left after all filters (`--repo`, `--filter`, `--type`, `--state`, `--draft`, `--author`, `--updated`) are applied
 - Marks each thread as read via `PATCH /notifications/threads/{thread_id}`
 - Lists the affected notifications and asks for an interactive `[y/N]` confirmation before making any change; anything other than `y`/`yes` aborts without calling the API
 - `--dry-run` reports exactly what would be marked and makes **no** API calls — use it to safely test filters before mutating
@@ -250,6 +277,7 @@ queries:
     repo: owner/repo
     type: pr
     author: dependabot
+    updated: ">30"
     action: unsubscribe   # "" | read | done | unsubscribe
     tags: [cleanup]
 ```
@@ -258,11 +286,18 @@ queries:
 
 ```
 gh notifications save <name> [--repo R] [--filter T] [--type T] [--state S] \
-    [--draft] [--author LOGIN] \
+    [--draft] [--author LOGIN] [--updated EXPR] \
     [--mark-read|--mark-done|--unsubscribe] [--tag t1 --tag t2]
 ```
 
 - Captures the given filter flags and an optional action under `<name>`
+- For example, save and preview notifications older than 30 days:
+
+  ```bash
+  gh notifications save stale --updated ">30" --mark-done
+  gh notifications run stale --dry-run
+  ```
+
 - Does not accept `--all`; saved queries always fetch unread notifications
 - `<name>` must be the first argument (`save <name> [flags]`)
 - Filter text containing spaces must be shell-quoted; unexpected positional arguments fail the
