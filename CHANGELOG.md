@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Added `--updated` to filter notification update ages using a required `>` or
+  `<` prefix and a positive integer number of days, including saved-query support.
+
 ## [0.6.0] - 2026-10-12
 
 ### Added

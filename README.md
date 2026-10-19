@@ -61,6 +61,7 @@ The table columns are `REPOSITORY`, `TYPE`, `TITLE`, and `AGE` (a short relative
 | `--state STATE` | Keep only issues/PRs in a state: `open`, `closed`, `merged`, `not-planned`, `completed`. `closed` and `merged` are distinct: `closed` excludes merged PRs — use `merged` for those |
 | `--draft` | Keep only draft pull requests |
 | `--author LOGIN` | Keep only issues/PRs created by this GitHub login |
+| `--updated EXPR` | Keep notifications older (`">30"`) or newer (`"<5"`) than a positive integer number of days; a `>` or `<` prefix is required |
 | `--show-reason` | Include the `REASON` column in the table |
 | `-i`, `--interactive` | Open the interactive picker (see below) |
 | `--mark-read` | Mark the matching notifications as read |
@@ -79,6 +80,12 @@ exact and case-insensitive; `dependabot` and `dependabot[bot]` both work. Filter
 inclusion-only: `--author` excludes other subject types and unavailable authors, and negated
 values are not supported. It shares the batched GraphQL lookup used by state and draft filters.
 
+The updated filter uses the notification's RFC3339 `updated_at` timestamp from the REST API.
+Days are exact elapsed 24-hour periods, not rounded ages or calendar days; comparisons are strict,
+so exactly 5 days matches neither `"<5"` nor `">5"`. Zero, negative, and decimal day counts are
+invalid. Missing or null timestamps are excluded when this filter is active. Quote expressions
+to prevent shell redirection. This filter runs locally and needs no GraphQL lookup.
+
 ## Examples
 
 ```bash
@@ -93,6 +100,15 @@ gh notifications --draft
 
 # PRs created by a particular author
 gh notifications --type pr --author octocat
+
+# Notifications last updated more than 30 days ago
+gh notifications --updated ">30"
+
+# Notifications last updated less than 5 days ago
+gh notifications --updated "<5"
+
+# Preview marking stale PR notifications as done
+gh notifications --type pr --updated ">30" --mark-done --dry-run
 
 # Issues that were closed as "not planned"
 gh notifications --type issue --state not-planned
@@ -131,6 +147,10 @@ repo".
 ```bash
 # Save a reusable query (filters + an optional action + tags)
 gh notifications save cleanup-bot-prs --repo octo-org/noisy --type pr --author dependabot --unsubscribe --tag cleanup
+
+# Save and preview a query for notifications last updated over 30 days ago
+gh notifications save stale --updated ">30" --mark-done
+gh notifications run stale --dry-run
 
 # List saved queries
 gh notifications list
