@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -107,7 +108,7 @@ func addSavedQueryFilterFlags(fs *flag.FlagSet, opts *options) {
 	fs.StringVar(&opts.filter, "f", "", "Keep only notifications whose title contains this text (case-insensitive) (shorthand)")
 	fs.StringVar(&opts.itemType, "type", "", "Keep only notifications of this type (issue, pr, commit, release, discussion, ...)")
 	fs.StringVar(&opts.itemType, "t", "", "Keep only notifications of this type (shorthand)")
-	fs.StringVar(&opts.state, "state", "", "Keep only issues/PRs in this state (open, closed, merged, not-planned, completed); closed excludes merged PRs")
+	fs.StringVar(&opts.state, "state", "", "Keep only issues/PRs in this state (open, closed, merged, not-planned, completed, deleted); closed excludes merged PRs")
 	fs.BoolVar(&opts.draft, "draft", false, "Keep only draft pull requests")
 	fs.StringVar(&opts.author, "author", "", "Keep only issues/PRs created by this GitHub login (case-insensitive; [bot] suffix optional)")
 	fs.Func("updated", `Keep notifications updated more (>) or less (<) than a positive integer number of days ago; prefix required (e.g. ">30" or "<5")`, func(value string) error {
@@ -165,7 +166,7 @@ func validateOptions(opts options) error {
 	}
 	if opts.state != "" {
 		if !validStates[normalizeState(opts.state)] {
-			return fmt.Errorf("invalid state %q: expected open, closed, merged, not-planned, or completed", opts.state)
+			return fmt.Errorf("invalid state %q: expected open, closed, merged, not-planned, completed, or deleted", opts.state)
 		}
 	}
 	if opts.author != "" && (normalizeAuthor(opts.author) == "" || strings.HasPrefix(strings.TrimSpace(opts.author), "!")) {
@@ -361,12 +362,14 @@ var validStates = map[string]bool{
 	"unplanned":   true,
 	"notplanned":  true,
 	"completed":   true,
+	"deleted":     true,
 }
 
 // matchesState reports whether an item's detail satisfies the requested state
 // filter. "closed" matches any closed item; "not-planned"/"completed" further
 // require the corresponding issue close reason. A merged pull request reports
-// state "merged" rather than "closed".
+// state "merged" rather than "closed". Missing/deleted issues and pull requests
+// report state "deleted".
 func matchesState(d itemDetail, want string) bool {
 	switch normalizeState(want) {
 	case "open":
@@ -379,6 +382,8 @@ func matchesState(d itemDetail, want string) bool {
 		return d.state == "closed" && d.stateReason == "not_planned"
 	case "completed":
 		return d.state == "closed" && d.stateReason == "completed"
+	case "deleted":
+		return d.state == "deleted"
 	default:
 		return false
 	}
@@ -412,10 +417,27 @@ func parseGraphQLRateLimit(raw json.RawMessage) (rateLimit, bool) {
 
 // itemDetail holds the GraphQL-fetched attributes of an issue or pull request.
 type itemDetail struct {
-	state       string // normalized: "open", "closed", or "merged"
+	state       string // normalized: "open", "closed", "merged", or "deleted"
 	stateReason string // normalized issue close reason: "completed", "not_planned", "reopened", or ""
 	isDraft     bool   // true only for draft pull requests
 	author      string // creator's GitHub login; empty when unavailable
+}
+
+// isOnlyNotFoundGraphQLError reports whether err is a GraphQL error consisting
+// solely of NOT_FOUND item errors. GitHub's GraphQL API returns partial data
+// with null fields alongside NOT_FOUND errors when a repository, issue, or pull
+// request has been deleted.
+func isOnlyNotFoundGraphQLError(err error) bool {
+	var gqlErr *api.GraphQLError
+	if !errors.As(err, &gqlErr) || len(gqlErr.Errors) == 0 {
+		return false
+	}
+	for _, e := range gqlErr.Errors {
+		if !strings.EqualFold(e.Type, "NOT_FOUND") {
+			return false
+		}
+	}
+	return true
 }
 
 // fetchItemDetails returns a map from notification index to its issue/PR detail,
@@ -463,7 +485,7 @@ func fetchItemDetails(doer graphQLDoer, notifications []Notification) (map[int]i
 		query := fmt.Sprintf("query(%s){rateLimit{limit remaining resetAt}\n%s}", strings.Join(params, ","), strings.Join(fields, "\n"))
 
 		var resp map[string]json.RawMessage
-		if err := doer.Do(query, variables, &resp); err != nil {
+		if err := doer.Do(query, variables, &resp); err != nil && !isOnlyNotFoundGraphQLError(err) {
 			return nil, quota, fmt.Errorf("fetching item details: %w", err)
 		}
 
@@ -486,6 +508,7 @@ func fetchItemDetails(doer graphQLDoer, notifications []Notification) (map[int]i
 				return nil, quota, fmt.Errorf("decoding item details for %s/%s#%d: %w", e.ref.owner, e.ref.repo, e.ref.number, err)
 			}
 			if node == nil {
+				details[e.idx] = itemDetail{state: "deleted"}
 				continue
 			}
 			if len(node.IssueOrPullRequest) == 0 {
@@ -501,6 +524,7 @@ func fetchItemDetails(doer graphQLDoer, notifications []Notification) (map[int]i
 				return nil, quota, fmt.Errorf("decoding item details for %s/%s#%d: %w", e.ref.owner, e.ref.repo, e.ref.number, err)
 			}
 			if item == nil {
+				details[e.idx] = itemDetail{state: "deleted"}
 				continue
 			}
 			if item.State == nil {

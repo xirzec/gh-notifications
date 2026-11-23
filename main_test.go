@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cli/go-gh/v2/pkg/api"
 )
 
 func TestParseArgsUpdated(t *testing.T) {
@@ -578,7 +580,7 @@ func TestFilterByType(t *testing.T) {
 }
 
 func TestParseArgsState(t *testing.T) {
-	for _, s := range []string{"open", "closed", "merged", "OPEN", "not-planned", "not_planned", "unplanned", "completed"} {
+	for _, s := range []string{"open", "closed", "merged", "OPEN", "not-planned", "not_planned", "unplanned", "completed", "deleted", "DELETED"} {
 		if _, err := parseArgs([]string{"--state", s}); err != nil {
 			t.Errorf("state %q: unexpected error: %v", s, err)
 		}
@@ -655,6 +657,10 @@ func TestMatchesState(t *testing.T) {
 		{itemDetail{state: "closed", stateReason: "not_planned"}, "closed", true},
 		{itemDetail{state: "closed", stateReason: "completed"}, "completed", true},
 		{itemDetail{state: "closed", stateReason: "not_planned"}, "completed", false},
+		{itemDetail{state: "deleted"}, "deleted", true},
+		{itemDetail{state: "deleted"}, "DELETED", true},
+		{itemDetail{state: "deleted"}, "closed", false},
+		{itemDetail{state: "open"}, "deleted", false},
 	}
 	for _, c := range cases {
 		if got := matchesState(c.detail, c.want); got != c.match {
@@ -707,11 +713,18 @@ type fakeGQL struct {
 func (f *fakeGQL) Do(query string, variables map[string]interface{}, response interface{}) error {
 	f.calls++
 	f.query = query
-	if f.err != nil && (f.failAt == 0 || f.calls == f.failAt) {
-		return f.err
-	}
+	shouldFail := f.err != nil && (f.failAt == 0 || f.calls == f.failAt)
 	if f.raw != "" {
-		return json.Unmarshal([]byte(f.raw), response)
+		if err := json.Unmarshal([]byte(f.raw), response); err != nil {
+			return err
+		}
+		if shouldFail {
+			return f.err
+		}
+		return nil
+	}
+	if shouldFail {
+		return f.err
 	}
 	n := 0
 	for k := range variables {
@@ -1068,15 +1081,18 @@ func TestFetchItemDetailsUnavailableAuthor(t *testing.T) {
 	notifications := []Notification{
 		{ID: "1", Subject: NotificationSubject{Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/1"}},
 	}
-	for _, raw := range []string{
-		`{"i0":{"issueOrPullRequest":{"state":"OPEN","isDraft":false,"author":null}}}`,
-		`{"i0":{"issueOrPullRequest":null}}`,
-		`{"i0":null}`,
+	for _, tc := range []struct {
+		raw         string
+		wantDeleted bool
+	}{
+		{`{"i0":{"issueOrPullRequest":{"state":"OPEN","isDraft":false,"author":null}}}`, false},
+		{`{"i0":{"issueOrPullRequest":null}}`, true},
+		{`{"i0":null}`, true},
 	} {
-		fake := &fakeGQL{raw: raw}
+		fake := &fakeGQL{raw: tc.raw}
 		details, _, err := fetchItemDetails(fake, notifications)
 		if err != nil {
-			t.Fatalf("fetchItemDetails(%s): %v", raw, err)
+			t.Fatalf("fetchItemDetails(%s): %v", tc.raw, err)
 		}
 		if got := filterByItemDetails(notifications, details, options{author: "dependabot"}); len(got) != 0 {
 			t.Errorf("unknown author matched inclusion: %+v", got)
@@ -1084,7 +1100,81 @@ func TestFetchItemDetailsUnavailableAuthor(t *testing.T) {
 		if got := filterByItemDetails(notifications, details, options{}); len(got) != 1 {
 			t.Errorf("unfiltered notification was dropped: %+v", got)
 		}
+		gotDeleted := filterByItemDetails(notifications, details, options{state: "deleted"})
+		if (len(gotDeleted) == 1) != tc.wantDeleted {
+			t.Errorf("filterByItemDetails(%s, state=deleted) = %+v, wantDeleted = %v", tc.raw, gotDeleted, tc.wantDeleted)
+		}
 	}
+}
+
+func TestFetchItemDetailsNotFoundGraphQLError(t *testing.T) {
+	notifications := []Notification{
+		{ID: "1", Subject: NotificationSubject{Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/1"}},
+		{ID: "2", Subject: NotificationSubject{Type: "PullRequest", URL: "https://api.github.com/repos/o/r/pulls/5657"}},
+		{ID: "3", Subject: NotificationSubject{Type: "Issue", URL: "https://api.github.com/repos/o/r/issues/5656"}},
+	}
+	t.Run("NOT_FOUND errors with partial data mark missing items deleted", func(t *testing.T) {
+		fake := &fakeGQL{
+			raw: `{
+				"rateLimit":{"limit":5000,"remaining":4980,"resetAt":"2026-11-23T21:00:00Z"},
+				"i0":{"issueOrPullRequest":{"state":"OPEN","isDraft":true,"author":{"login":"alice"}}},
+				"i1":{"issueOrPullRequest":null},
+				"i2":null
+			}`,
+			err: &api.GraphQLError{
+				Errors: []api.GraphQLErrorItem{
+					{Type: "NOT_FOUND", Message: "Could not resolve to an issue or pull request with the number of 5657."},
+					{Type: "NOT_FOUND", Message: "Could not resolve to a Repository with the name 'o/r'."},
+				},
+			},
+		}
+		details, quota, err := fetchItemDetails(fake, notifications)
+		if err != nil {
+			t.Fatalf("fetchItemDetails: %v", err)
+		}
+		if quota == nil || quota.remaining != 4980 {
+			t.Errorf("quota = %+v, want remaining 4980", quota)
+		}
+		if got := details[0]; got.state != "open" || !got.isDraft || got.author != "alice" {
+			t.Errorf("details[0] = %+v", got)
+		}
+		if got := details[1]; got != (itemDetail{state: "deleted"}) {
+			t.Errorf("details[1] = %+v, want deleted", got)
+		}
+		if got := details[2]; got != (itemDetail{state: "deleted"}) {
+			t.Errorf("details[2] = %+v, want deleted", got)
+		}
+		if got := filterByItemDetails(notifications, details, options{draft: true}); len(got) != 1 || got[0].ID != "1" {
+			t.Errorf("draft filter = %+v, want only ID 1", got)
+		}
+		if got := filterByItemDetails(notifications, details, options{state: "deleted"}); len(got) != 2 || got[0].ID != "2" || got[1].ID != "3" {
+			t.Errorf("deleted filter = %+v, want IDs 2 and 3", got)
+		}
+	})
+
+	t.Run("non-NOT_FOUND GraphQL error still fails", func(t *testing.T) {
+		for _, gqlErr := range []*api.GraphQLError{
+			{Errors: []api.GraphQLErrorItem{{Type: "NOT_FOUND"}, {Type: "FORBIDDEN", Message: "Resource not accessible"}}},
+			{Errors: nil},
+		} {
+			fake := &fakeGQL{
+				raw: `{"i0":{"issueOrPullRequest":null},"i1":{"issueOrPullRequest":null},"i2":{"issueOrPullRequest":null}}`,
+				err: gqlErr,
+			}
+			if details, _, err := fetchItemDetails(fake, notifications); err == nil || details != nil {
+				t.Errorf("details = %+v, err = %v, want failure for %+v", details, err, gqlErr)
+			}
+		}
+	})
+
+	t.Run("NOT_FOUND without response payload still fails", func(t *testing.T) {
+		fake := &fakeGQL{
+			err: &api.GraphQLError{Errors: []api.GraphQLErrorItem{{Type: "NOT_FOUND"}}},
+		}
+		if details, _, err := fetchItemDetails(fake, notifications); err == nil || !strings.Contains(err.Error(), "missing response") || details != nil {
+			t.Errorf("details = %+v, err = %v, want missing response error", details, err)
+		}
+	})
 }
 
 func TestLoadFilteredNotifications(t *testing.T) {
