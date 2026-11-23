@@ -58,7 +58,7 @@ The table columns are `REPOSITORY`, `TYPE`, `TITLE`, and `AGE` (a short relative
 | `-R`, `--repo OWNER/REPO` | Limit to a single repository |
 | `-f`, `--filter TEXT` | Keep only notifications whose title contains `TEXT` (case-insensitive) |
 | `-t`, `--type TYPE` | Keep only a subject type: `issue`, `pr`, `commit`, `release`, `discussion`, … (friendly aliases accepted) |
-| `--state STATE` | Keep only issues/PRs in a state: `open`, `closed`, `merged`, `not-planned`, `completed`. `closed` and `merged` are distinct: `closed` excludes merged PRs — use `merged` for those |
+| `--state STATE` | Keep only issues/PRs in a state: `open`, `closed`, `merged`, `not-planned`, `completed`, `deleted`. `closed` and `merged` are distinct: `closed` excludes merged PRs — use `merged` for those |
 | `--draft` | Keep only draft pull requests |
 | `--author LOGIN` | Keep only issues/PRs created by this GitHub login |
 | `--updated EXPR` | Keep notifications older (`">30"`) or newer (`"<5"`) than a positive integer number of days; a `>` or `<` prefix is required |

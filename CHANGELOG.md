@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Added `--state deleted` to match issue and pull request notifications whose target item (or repository) has been deleted.
+
+### Fixed
+
+- Tolerate GraphQL `NOT_FOUND` errors when fetching item details so deleted issues or pull requests no longer abort `--state`, `--draft`, or `--author` queries.
+
 ## [0.7.0] - 2026-10-19
 
 ### Added
